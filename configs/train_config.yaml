@@ -1,0 +1,31 @@
+model:
+  config_path: "configs/eagle3_qwen2.5_7b.json"
+  target_model: "Qwen/Qwen2.5-7B-Instruct"
+  target_layer: 28
+
+data:
+  dataset_path: "data/processed/hybrid_dataset.json"
+  features_dir: "data/features"
+  max_seq_len: 2048
+  chunk_size: 5000
+
+training:
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  learning_rate: 0.0003
+  min_learning_rate: 0.00001
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  epochs: 20
+  warmup_steps: 500
+  checkpoint_interval_epochs: 5
+  output_dir: "checkpoints"
+
+loss:
+  ce_weight: 1.0
+  smooth_l1_weight: 0.5
+
+safeguards:
+  min_disk_free_gb: 50
+  max_runtime_hours: 6.0
