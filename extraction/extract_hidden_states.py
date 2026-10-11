@@ -1,0 +1,175 @@
+"""
+Script extract_hidden_states.py
+Trích xuất Hidden States tầng 28 từ Target Model Qwen2.5-7B-Instruct.
+Áp dụng Sequence Bucketing (512, 1024, 2048) và lưu chunks safetensors (bfloat16).
+Tích hợp OOM Guard và Disk Overflow Guard (>= 50GB trống).
+"""
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+
+def check_disk_space(path: str, min_free_gb: float = 50.0) -> bool:
+    """
+    Kiểm tra dung lượng đĩa khả dụng trước khi trích xuất vector.
+    Bắt buộc dung lượng trống >= min_free_gb.
+    """
+    try:
+        check_target = path if os.path.exists(path) else os.path.dirname(os.path.abspath(path))
+        total, used, free = shutil.disk_usage(check_target)
+        free_gb = free / (1024 ** 3)
+        logger.info("Kiểm tra ổ đĩa tại '%s': Còn trống %.2f GB (Yêu cầu tối thiểu: %.2f GB)", check_target, free_gb, min_free_gb)
+        return free_gb >= min_free_gb
+    except Exception as e:
+        logger.warning("Không thể kiểm tra dung lượng ổ đĩa: %s", e)
+        return True
+
+
+def bucket_sequences(samples: List[Dict[str, Any]], bucket_limits: Optional[List[int]] = None) -> Dict[int, List[Dict[str, Any]]]:
+    """
+    Phân loại các mẫu vào các bucket độ dài tương ứng (<= 512, <= 1024, <= 2048).
+    Loại bỏ các mẫu dài quá giới hạn cao nhất (OOM Guard).
+    """
+    if bucket_limits is None:
+        bucket_limits = [512, 1024, 2048]
+    bucket_limits = sorted(bucket_limits)
+    max_len = bucket_limits[-1]
+
+    buckets: Dict[int, List[Dict[str, Any]]] = {b: [] for b in bucket_limits}
+
+    for item in samples:
+        length = item.get("length")
+        if length is None:
+            # Ước lượng chiều dài nếu chưa có
+            text = item.get("text") or str(item.get("conversations", ""))
+            length = len(text.split())
+
+        if length > max_len:
+            logger.debug("Loại bỏ mẫu có độ dài %d vượt trần max_len %d", length, max_len)
+            continue
+
+        for b in bucket_limits:
+            if length <= b:
+                buckets[b].append(item)
+                break
+
+    return buckets
+
+
+def parse_extraction_args(args: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Trích xuất Hidden States tầng 28 từ Qwen2.5-7B")
+    parser.add_argument("--model-id", type=str, default="Qwen/Qwen2.5-7B-Instruct", help="Tên hoặc đường dẫn target model")
+    parser.add_argument("--dataset-path", type=str, default="data/processed/hybrid_dataset.json", help="Tập dữ liệu lai đầu vào")
+    parser.add_argument("--output-dir", type=str, default="data/features", help="Thư mục lưu feature safetensors")
+    parser.add_argument("--target-layer", type=int, default=28, help="Tầng trích xuất (tầng 28)")
+    parser.add_argument("--chunk-size", type=int, default=5000, help="Số mẫu trên mỗi file safetensors chunk")
+    parser.add_argument("--batch-size", type=int, default=8, help="Batch size khi forward model lớn")
+    parser.add_argument("--min-disk-gb", type=float, default=50.0, help="Dung lượng đĩa trống tối thiểu (GB)")
+    return parser.parse_args(args)
+
+
+def run_extraction():
+    args = parse_extraction_args()
+
+    # Chốt chặn kiểm tra đĩa
+    if not check_disk_space(args.output_dir, min_free_gb=args.min_disk_gb):
+        logger.error("Dung lượng đĩa khả dụng dưới %.2f GB! Dừng để tránh Disk Overflow.", args.min_disk_gb)
+        sys.exit(1)
+
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from safetensors.torch import save_file
+    except ImportError:
+        logger.error("Cần cài đặt torch, transformers và safetensors trên môi trường chạy thực tế!")
+        sys.exit(1)
+
+    logger.info("Đang nạp Target Model: %s ở định dạng bfloat16...", args.model_id)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_id,
+        torch_dtype=torch.bfloat16,
+        device_map="auto" if device == "cuda" else None,
+        trust_remote_code=True,
+    )
+    model.eval()
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(args.dataset_path, "r", encoding="utf-8") as f:
+        dataset = json.load(f)
+
+    logger.info("Tổng số mẫu: %d. Bắt đầu phân nhóm độ dài...", len(dataset))
+    buckets = bucket_sequences(dataset)
+
+    chunk_idx = 0
+    buffer_hidden = []
+    buffer_target = []
+    buffer_ids = []
+
+    for bucket_len, samples in buckets.items():
+        logger.info("Xử lý bucket <= %d: %d mẫu", bucket_len, len(samples))
+        for i in range(0, len(samples), args.batch_size):
+            batch_samples = samples[i : i + args.batch_size]
+            texts = [
+                tokenizer.apply_chat_template(s["conversations"], tokenize=False, add_generation_prompt=False)
+                for s in batch_samples
+            ]
+            inputs = tokenizer(
+                texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=bucket_len,
+            ).to(device)
+
+            with torch.no_grad():
+                outputs = model(**inputs, output_hidden_states=True)
+                # Tầng trích xuất 28
+                layer_hidden = outputs.hidden_states[args.target_layer].cpu().to(torch.bfloat16)
+                input_ids = inputs["input_ids"].cpu()
+
+            buffer_hidden.append(layer_hidden)
+            buffer_ids.append(input_ids)
+
+            # Lưu chunk nếu chạm mốc chunk_size
+            if len(buffer_hidden) * args.batch_size >= args.chunk_size:
+                chunk_file = out_dir / f"features_chunk_{chunk_idx:04d}.safetensors"
+                tensors = {
+                    "hidden_states": torch.cat(buffer_hidden, dim=0),
+                    "input_ids": torch.cat(buffer_ids, dim=0),
+                }
+                save_file(tensors, str(chunk_file))
+                logger.info("Đã lưu chunk %d ra %s", chunk_idx, chunk_file)
+                chunk_idx += 1
+                buffer_hidden.clear()
+                buffer_ids.clear()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+    # Lưu buffer còn lại
+    if buffer_hidden:
+        chunk_file = out_dir / f"features_chunk_{chunk_idx:04d}.safetensors"
+        tensors = {
+            "hidden_states": torch.cat(buffer_hidden, dim=0),
+            "input_ids": torch.cat(buffer_ids, dim=0),
+        }
+        save_file(tensors, str(chunk_file))
+        logger.info("Đã lưu chunk cuối cùng %d ra %s", chunk_idx, chunk_file)
+
+    logger.info("Hoàn tất trích xuất Hidden States!")
+
+
+if __name__ == "__main__":
+    run_extraction()
