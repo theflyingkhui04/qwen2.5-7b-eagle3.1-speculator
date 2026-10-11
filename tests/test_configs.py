@@ -15,7 +15,14 @@ def test_model_config_integrity():
     assert data["num_key_value_heads"] == 4
     assert data["target_layer"] == 28
     assert data["use_fc_norm"] is True
+    assert data.get("use_post_norm_feedback") is True
+    assert data.get("eagle_version") == "3.1"
+    assert "Eagle3_1Qwen2ForCausalLM" in data["architectures"]
     assert "EagleQwen2ForCausalLM" in data["architectures"]
+
+    # Kiểm tra cả file eagle3.1_qwen2.5_7b.json
+    eagle31_path = root / "configs" / "eagle3.1_qwen2.5_7b.json"
+    assert eagle31_path.exists()
 
 def test_train_config_integrity():
     root = Path(__file__).parent.parent

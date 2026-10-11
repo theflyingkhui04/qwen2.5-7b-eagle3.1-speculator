@@ -10,6 +10,8 @@ def test_config_defaults():
     assert config.num_key_value_heads == 4
     assert config.target_layer == 28
     assert config.use_fc_norm is True
+    assert config.use_post_norm_feedback is True
+    assert config.eagle_version == "3.1"
     assert config.vocab_size == 152064
 
 def test_config_from_dict():

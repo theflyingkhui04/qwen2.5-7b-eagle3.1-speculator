@@ -9,6 +9,7 @@ def test_full_repository_layout():
         "requirements.txt",
         ".gitignore",
         "configs/eagle3_qwen2.5_7b.json",
+        "configs/eagle3.1_qwen2.5_7b.json",
         "configs/train_config.yaml",
         "data/prepare_hybrid_dataset.py",
         "extraction/extract_hidden_states.py",

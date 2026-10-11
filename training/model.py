@@ -35,7 +35,9 @@ class Eagle3SpeculatorConfig:
     rms_norm_eps: float = 1e-6
     initializer_range: float = 0.02
     use_fc_norm: bool = True
-    architectures: list = field(default_factory=lambda: ["EagleQwen2ForCausalLM"])
+    use_post_norm_feedback: bool = True
+    eagle_version: str = "3.1"
+    architectures: list = field(default_factory=lambda: ["Eagle3_1Qwen2ForCausalLM", "EagleQwen2ForCausalLM"])
     model_type: str = "eagle_qwen2"
     torch_dtype: str = "float16"
 

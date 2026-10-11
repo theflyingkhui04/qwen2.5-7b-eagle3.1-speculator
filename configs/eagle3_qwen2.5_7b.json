@@ -1,8 +1,10 @@
 {
   "architectures": [
+    "Eagle3_1Qwen2ForCausalLM",
     "EagleQwen2ForCausalLM"
   ],
   "model_type": "eagle_qwen2",
+  "eagle_version": "3.1",
   "hidden_size": 3584,
   "intermediate_size": 18944,
   "num_hidden_layers": 1,
@@ -16,5 +18,6 @@
   "target_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
   "target_layer": 28,
   "use_fc_norm": true,
+  "use_post_norm_feedback": true,
   "torch_dtype": "float16"
 }

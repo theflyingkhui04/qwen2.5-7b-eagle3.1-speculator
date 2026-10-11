@@ -16,7 +16,10 @@ def test_build_hf_config_for_vllm_float16():
         "target_layer": 28,
     }
     hf_cfg = build_hf_config(raw_cfg, precision="float16")
-    assert hf_cfg["architectures"] == ["EagleQwen2ForCausalLM"]
+    assert "Eagle3_1Qwen2ForCausalLM" in hf_cfg["architectures"]
+    assert "EagleQwen2ForCausalLM" in hf_cfg["architectures"]
+    assert hf_cfg["eagle_version"] == "3.1"
+    assert hf_cfg["use_post_norm_feedback"] is True
     assert hf_cfg["torch_dtype"] == "float16"
     assert hf_cfg["hidden_size"] == 3584
     assert hf_cfg["target_layer"] == 28

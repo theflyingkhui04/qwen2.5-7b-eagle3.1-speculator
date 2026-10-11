@@ -23,8 +23,9 @@ def build_hf_config(base_config: Dict[str, Any], precision: str = "float16") -> 
     Xây dựng config.json chuẩn Hugging Face cho vLLM Speculative Decoding.
     """
     config = dict(base_config)
-    config["architectures"] = ["EagleQwen2ForCausalLM"]
+    config["architectures"] = ["Eagle3_1Qwen2ForCausalLM", "EagleQwen2ForCausalLM"]
     config["model_type"] = "eagle_qwen2"
+    config["eagle_version"] = "3.1"
     config["torch_dtype"] = precision
     config["hidden_size"] = config.get("hidden_size", 3584)
     config["num_hidden_layers"] = config.get("num_hidden_layers", 1)
@@ -33,6 +34,7 @@ def build_hf_config(base_config: Dict[str, Any], precision: str = "float16") -> 
     config["vocab_size"] = config.get("vocab_size", 152064)
     config["target_layer"] = config.get("target_layer", 28)
     config["use_fc_norm"] = config.get("use_fc_norm", True)
+    config["use_post_norm_feedback"] = config.get("use_post_norm_feedback", True)
     return config
 
 
