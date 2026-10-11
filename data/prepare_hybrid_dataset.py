@@ -44,7 +44,8 @@ def filter_and_format_conversation(raw_convo: List[Dict[str, Any]]) -> Optional[
         else:
             continue
 
-        formatted_turns.append({"role": role, "content": str(content).strip()})
+        clean_content = str(content).replace("\u2028", "\n").replace("\u2029", "\n\n").strip()
+        formatted_turns.append({"role": role, "content": clean_content})
 
     # Cần tối thiểu 1 cặp user - assistant
     if len(formatted_turns) < 2:

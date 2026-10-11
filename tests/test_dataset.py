@@ -21,6 +21,17 @@ def test_filter_empty_or_invalid_conversation():
     assert filter_and_format_conversation([]) is None
     assert filter_and_format_conversation([{"from": "human", "value": ""}]) is None
 
+def test_sanitizes_unusual_line_terminators():
+    raw_convo = [
+        {"from": "human", "value": "Line 1\u2028Line 2"},
+        {"from": "gpt", "value": "Paragraph 1\u2029Paragraph 2"}
+    ]
+    res = filter_and_format_conversation(raw_convo)
+    assert "\u2028" not in res["conversations"][0]["content"]
+    assert "\u2029" not in res["conversations"][1]["content"]
+    assert "Line 1\nLine 2" == res["conversations"][0]["content"]
+    assert "Paragraph 1\n\nParagraph 2" == res["conversations"][1]["content"]
+
 def test_build_hybrid_dataset(tmp_path):
     sharegpt_file = tmp_path / "sharegpt.json"
     vi_file = tmp_path / "vi_invoice.json"
