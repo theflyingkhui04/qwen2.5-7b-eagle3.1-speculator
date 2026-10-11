@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Data and Features
+data/raw/
+data/processed/
+data/features/
+*.safetensors
+*.pt
+*.bin
+*.tar.gz
+
+# Checkpoints and Outputs
+checkpoints/
+output/
+runs/
+wandb/
+
+# Environments
+.venv/
+venv/
+ENV/
+*.env
+
+# Jupyter & Remote
+.ipynb_checkpoints/
+nohup.out
+tmux.log
+.superpowers/

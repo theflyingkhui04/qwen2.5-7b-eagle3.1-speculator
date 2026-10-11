@@ -1,0 +1,10 @@
+torch>=2.4.0
+transformers>=4.45.0
+accelerate>=0.34.0
+safetensors>=0.4.4
+huggingface_hub>=0.24.0
+datasets>=2.20.0
+pyyaml>=6.0.2
+tqdm>=4.66.5
+numpy>=1.26.0
+pytest>=8.0.0
