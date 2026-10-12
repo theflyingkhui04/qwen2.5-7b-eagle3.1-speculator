@@ -119,7 +119,11 @@ def run_extraction():
     buffer_ids = []
 
     for bucket_len, samples in buckets.items():
+        if not samples:
+            continue
         logger.info("Xử lý bucket <= %d: %d mẫu", bucket_len, len(samples))
+        buffer_hidden = []
+        buffer_ids = []
         for i in range(0, len(samples), args.batch_size):
             batch_samples = samples[i : i + args.batch_size]
             texts = [
@@ -129,7 +133,7 @@ def run_extraction():
             inputs = tokenizer(
                 texts,
                 return_tensors="pt",
-                padding=True,
+                padding="max_length",
                 truncation=True,
                 max_length=bucket_len,
             ).to(device)
@@ -151,22 +155,27 @@ def run_extraction():
                     "input_ids": torch.cat(buffer_ids, dim=0),
                 }
                 save_file(tensors, str(chunk_file))
-                logger.info("Đã lưu chunk %d ra %s", chunk_idx, chunk_file)
+                logger.info("Đã lưu chunk %d (len=%d) ra %s", chunk_idx, bucket_len, chunk_file)
                 chunk_idx += 1
                 buffer_hidden.clear()
                 buffer_ids.clear()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-    # Lưu buffer còn lại
-    if buffer_hidden:
-        chunk_file = out_dir / f"features_chunk_{chunk_idx:04d}.safetensors"
-        tensors = {
-            "hidden_states": torch.cat(buffer_hidden, dim=0),
-            "input_ids": torch.cat(buffer_ids, dim=0),
-        }
-        save_file(tensors, str(chunk_file))
-        logger.info("Đã lưu chunk cuối cùng %d ra %s", chunk_idx, chunk_file)
+        # Lưu buffer còn lại của bucket này trước khi sang bucket mới
+        if buffer_hidden:
+            chunk_file = out_dir / f"features_chunk_{chunk_idx:04d}.safetensors"
+            tensors = {
+                "hidden_states": torch.cat(buffer_hidden, dim=0),
+                "input_ids": torch.cat(buffer_ids, dim=0),
+            }
+            save_file(tensors, str(chunk_file))
+            logger.info("Đã lưu chunk %d (len=%d) ra %s", chunk_idx, bucket_len, chunk_file)
+            chunk_idx += 1
+            buffer_hidden.clear()
+            buffer_ids.clear()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     logger.info("Hoàn tất trích xuất Hidden States!")
 

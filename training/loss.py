@@ -44,20 +44,20 @@ class EagleDualLoss(ModuleBase):
             return 0.0, {"ce_loss": 0.0, "reg_loss": 0.0, "total_loss": 0.0}
 
         vocab_size = logits.size(-1)
-        flat_logits = logits.view(-1, vocab_size)
-        flat_targets = target_token_ids.view(-1)
+        flat_logits = logits.reshape(-1, vocab_size)
+        flat_targets = target_token_ids.reshape(-1)
 
         # 1. Classification Cross-Entropy Loss
-        ce_loss = self.ce_loss_fn(flat_logits, flat_targets)
+        ce_loss = self.ce_loss_fn(flat_logits.float(), flat_targets)
 
         # 2. Regression Smooth L1 Loss trên không gian vector ẩn
         if loss_mask is not None:
             mask = loss_mask.unsqueeze(-1).expand_as(pred_hidden)
             masked_pred = pred_hidden * mask
             masked_target = target_hidden * mask
-            reg_loss = self.reg_loss_fn(masked_pred, masked_target)
+            reg_loss = self.reg_loss_fn(masked_pred.float(), masked_target.float())
         else:
-            reg_loss = self.reg_loss_fn(pred_hidden, target_hidden)
+            reg_loss = self.reg_loss_fn(pred_hidden.float(), target_hidden.float())
 
         # 3. Kết hợp Dual Loss
         total_loss = self.ce_weight * ce_loss + self.smooth_l1_weight * reg_loss

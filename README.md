@@ -24,7 +24,8 @@
 
 ```text
 qwen2.5-7b-eagle3.1-speculator/
-├── README.md                      # Hướng dẫn chi tiết chạy 1-click trên Vast.ai & Colab
+├── README.md                      # Hướng dẫn chi tiết chạy 1-click trên Modal & Vast.ai
+├── modal_pipeline.py              # Serverless Pipeline 1-Click trên Modal.com (A100-80GB)
 ├── requirements.txt               # Dependencies: torch, transformers, accelerate, safetensors...
 ├── configs/
 │   ├── eagle3_qwen2.5_7b.json     # Cấu hình kiến trúc đầu nháp EAGLE-3.1
@@ -42,7 +43,7 @@ qwen2.5-7b-eagle3.1-speculator/
 │   └── package_and_upload.py      # Đóng gói config.json, weights (float16) và push lên Hugging Face Hub
 ├── notebooks/
 │   └── train_on_vastai.ipynb      # Notebook JupyterLab chạy trực quan từng bước
-└── run_all.sh                     # Script Bash chạy ngầm tự động (tmux + auto-stop máy)
+└── run_all.sh                     # Script Bash chạy ngầm tự động trên Vast.ai (tmux + auto-stop máy)
 ```
 
 ---
@@ -91,7 +92,118 @@ qwen2.5-7b-eagle3.1-speculator/
 
 ---
 
-## 4. Chạy Tự Động 1-Click Trên Vast.ai (Chi Phí <= 2.50 USD)
+## 4. Chạy Tự Động Serverless Trên Modal.com (Khuyến Nghị - GPU A100-80GB)
+
+Quy trình Serverless trên [Modal.com](https://modal.com) là phương pháp tối ưu và an toàn nhất hiện nay:
+- **Tự động cấp phát GPU NVIDIA A100-80GB** khi thực thi và **tự động giải phóng ngay lập tức khi hoàn tất** (không lo quên tắt máy gây phát sinh chi phí như thuê Virtual Machine).
+- Tích hợp sẵn Persistent Volume (`qwen-eagle3-volume`) lưu trữ features và checkpoints an toàn giữa các lượt chạy.
+- Tự động theo dõi metric huấn luyện thời gian thực trên Weights & Biases (W&B) và tự động đẩy trọng số lên Hugging Face Hub.
+
+### 4.1. Cài Đặt Môi Trường & Thiết Lập 1 Lần Đầu
+
+1. **Cài đặt thư viện Modal CLI:**
+   ```bash
+   pip install modal
+   ```
+
+2. **Đăng nhập và liên kết tài khoản Modal:**
+   ```bash
+   modal setup
+   ```
+   *(Trình duyệt sẽ tự động mở để xác thực tài khoản. Modal tặng sẵn 30 USD/tháng free credits cho tài khoản đã liên kết phương thức thanh toán).*
+
+3. **Cấu hình Secrets trên Modal (1 lần duy nhất):**
+   Tạo 2 secret trên Modal để cấp quyền nạp/đẩy model lên Hugging Face và theo dõi biểu đồ loss trên W&B:
+   ```bash
+   # Tạo secret Hugging Face (cần Token có quyền Write để đẩy model)
+   modal secret create my-huggingface-secret HF_TOKEN="hf_your_token_here"
+
+   # Tạo secret Weights & Biases (để xem log Loss thời gian thực)
+   modal secret create wandb-secret WANDB_API_KEY="your_wandb_api_key_here"
+   ```
+   *(Hoặc có thể tạo trực tiếp trên giao diện web trực quan tại: https://modal.com/secrets)*
+
+4. **Chốt chặn an toàn ví tiền (Khuyến nghị 100%):**
+   Vào Modal Dashboard -> **Settings** -> **Billing**: Thiết lập **Monthly Spend Limit = $0**.
+   Điều này đảm bảo khi dùng hết 30 USD credit miễn phí, Modal sẽ dừng tác vụ thay vì tự động trừ tiền vào tài khoản ngân hàng / Google Pay.
+
+---
+
+### 4.2. Các Lệnh Chạy 1-Click (1-Click Execution)
+
+Toàn bộ pipeline được điều khiển tự động qua script `modal_pipeline.py`:
+
+#### 1. Kiểm thử nhanh toàn bộ quy trình (Test Run - 50 mẫu, 1 epoch):
+Chạy kiểm thử khép kín để xác thực GPU A100, container image, tokenizer và loss function:
+```bash
+modal run modal_pipeline.py --step test
+```
+
+#### 2. Chạy toàn bộ quy trình từ A đến Z (Full Pipeline - Khuyến nghị):
+Tự động chạy tuần tự: Trích xuất 30.000 mẫu trên A100-80GB -> Huấn luyện 20 Epochs -> Đóng gói trọng số chuẩn float16 -> Upload trực tiếp lên Hugging Face Hub:
+```bash
+modal run modal_pipeline.py --step all --epochs 20
+```
+
+#### 3. Chạy độc lập từng bước (Tùy chọn linh hoạt):
+Nếu muốn chạy riêng lẻ từng giai đoạn:
+- **Chỉ trích xuất Vector ẩn tầng 28 (Feature Extraction):**
+  ```bash
+  modal run modal_pipeline.py --step extract
+  ```
+- **Chỉ huấn luyện Đầu nháp EAGLE-3.1 (Train Speculator Head):**
+  ```bash
+  modal run modal_pipeline.py --step train --epochs 20
+  ```
+- **Chỉ đóng gói và đẩy model lên Hugging Face Hub:**
+  ```bash
+  modal run modal_pipeline.py --step export --repo-id "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator"
+  ```
+
+---
+
+### 4.3. Chuyển Giao Dữ Liệu & Huấn Luyện Nối Tiếp Giữa Các Tài Khoản (Transfer Workspaces)
+
+Vì gói miễn phí cấp **30 USD/tháng cho mỗi Workspace cá nhân**, các thành viên trong nhóm có thể mở rộng quỹ credit (30 USD x số người) bằng cách luân chuyển dữ liệu và huấn luyện nối tiếp theo các bước sau:
+
+#### Bước 1: Tải Checkpoints & Features từ Workspace cũ về máy
+Đứng ở tài khoản cũ (khi sắp dùng hết 30 USD credit), chạy lệnh tải dữ liệu từ Modal Volume về máy tính:
+```bash
+# Tải toàn bộ features và checkpoints đã có về máy
+modal volume get qwen-eagle3-volume features ./data/features
+modal volume get qwen-eagle3-volume checkpoints ./checkpoints
+```
+
+#### Bước 2: Chuyển sang tài khoản Modal mới
+Đăng nhập tài khoản Modal mới (của bạn bè hoặc tài khoản thứ 2):
+```bash
+modal setup
+```
+*(Hoặc dùng `modal profile activate <tên_profile>` nếu bạn quản lý nhiều tài khoản trên cùng một máy).*
+
+Thiết lập lại Secrets trên tài khoản mới (1 lần duy nhất):
+```bash
+modal secret create my-huggingface-secret HF_TOKEN="hf_your_token"
+modal secret create --force wandb-secret WANDB_API_KEY="your_wandb_key"
+```
+
+#### Bước 3: Đẩy dữ liệu vào Volume của tài khoản mới
+Nạp dữ liệu đã tải từ bước 1 vào Volume của tài khoản mới:
+```bash
+modal volume put qwen-eagle3-volume ./data/features features
+modal volume put qwen-eagle3-volume ./checkpoints checkpoints
+```
+
+#### Bước 4: Tiếp tục huấn luyện nối tiếp
+Chạy lệnh huấn luyện như bình thường:
+```bash
+modal run modal_pipeline.py --step train --epochs 20
+```
+> **Cơ chế Auto-Resume:** Script `training/train.py` đã tích hợp sẵn tính năng tự động tìm kiếm checkpoint mới nhất trong `/vol/checkpoints` (ví dụ `checkpoint_epoch_10.pt`). Mô hình, trạng thái AdamW optimizer và Cosine Annealing scheduler sẽ được phục hồi 100% để tiếp tục huấn luyện ngay từ epoch 11 mà không tốn công chạy lại từ đầu.
+
+---
+
+## 5. Chạy Tự Động Trên Vast.ai (Giải Pháp Máy Chủ Thuê Riêng)
 
 Trên instance 1x NVIDIA A100 (80GB VRAM) của Vast.ai:
 ```bash
@@ -114,7 +226,7 @@ tmux new -s train "bash run_all.sh"
 
 ---
 
-## 5. Triển Khai vLLM Trên GPU Tesla T4 (16GB)
+## 6. Triển Khai vLLM Trên GPU Tesla T4 (16GB)
 
 Trên môi trường Google Colab hoặc máy chủ trang bị Tesla T4 (Turing sm_75):
 

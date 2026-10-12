@@ -29,4 +29,8 @@ ENV/
 .ipynb_checkpoints/
 nohup.out
 tmux.log
+
+# AI Assistants, Agents & Skills
+.agents/
 .superpowers/
+skills/

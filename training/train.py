@@ -86,10 +86,13 @@ def save_checkpoint(
     return str(file_path)
 
 
-def main():
-    args = parse_training_args()
-    config = load_training_config(args.config)
-
+def run_training(
+    config: Dict[str, Any],
+    resume: bool = True,
+    checkpoint_path: Optional[str] = None,
+    epochs: Optional[int] = None,
+    batch_size: Optional[int] = None,
+):
     try:
         import torch
         from torch.optim import AdamW
@@ -100,12 +103,13 @@ def main():
         sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info("Khởi tạo môi trường huấn luyện trên thiết bị: %s", device)
+    dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32
+    logger.info("Khởi tạo môi trường huấn luyện trên thiết bị: %s (dtype=%s)", device, dtype)
 
     # 1. Khởi tạo mô hình
     model_cfg_path = config["model"]["config_path"]
     model_config = Eagle3SpeculatorConfig.from_json_file(model_cfg_path)
-    model = Eagle3SpeculatorHead(model_config).to(device)
+    model = Eagle3SpeculatorHead(model_config).to(device=device, dtype=dtype)
 
     # 2. Loss & Optimizer
     loss_cfg = config.get("loss", {})
@@ -115,21 +119,21 @@ def main():
     )
 
     train_cfg = config["training"]
-    epochs = args.epochs or train_cfg.get("epochs", 20)
-    batch_size = args.batch_size or train_cfg.get("batch_size", 16)
+    total_epochs = epochs or train_cfg.get("epochs", 20)
+    effective_batch_size = batch_size or train_cfg.get("batch_size", 16)
     grad_accum_steps = train_cfg.get("gradient_accumulation_steps", 2)
     lr = float(train_cfg.get("learning_rate", 3e-4))
     weight_decay = float(train_cfg.get("weight_decay", 0.01))
     betas = (float(train_cfg.get("adam_beta1", 0.9)), float(train_cfg.get("adam_beta2", 0.95)))
 
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas)
-    scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=float(train_cfg.get("min_learning_rate", 1e-5)))
+    scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs, eta_min=float(train_cfg.get("min_learning_rate", 1e-5)))
 
     # 3. Phục hồi checkpoint nếu có
     start_epoch = 1
     global_step = 0
-    checkpoint_to_load = args.checkpoint_path
-    if not checkpoint_to_load and args.resume:
+    checkpoint_to_load = checkpoint_path
+    if not checkpoint_to_load and resume:
         checkpoint_to_load = get_latest_checkpoint(train_cfg.get("output_dir", "checkpoints"))
 
     if checkpoint_to_load:
@@ -151,33 +155,54 @@ def main():
         logger.warning("Không tìm thấy file feature nào trong %s. Hãy chạy extraction trước!", features_dir)
         return
 
-    logger.info("Tìm thấy %d file feature chunk. Bắt đầu huấn luyện %d epochs...", len(feature_files), epochs)
+    logger.info("Tìm thấy %d file feature chunk. Bắt đầu huấn luyện %d epochs...", len(feature_files), total_epochs)
+
+    # 5. Khởi tạo Weights & Biases nếu có API key
+    wandb_run = None
+    if os.environ.get("WANDB_API_KEY"):
+        try:
+            import wandb
+            wandb_entity = os.environ.get("WANDB_ENTITY", None)
+            init_kwargs = {
+                "project": "qwen2.5-eagle3.1-speculator",
+                "name": f"eagle3.1-qwen2.5-7b-{total_epochs}ep",
+                "config": config,
+            }
+            if wandb_entity:
+                init_kwargs["entity"] = wandb_entity
+            wandb_run = wandb.init(**init_kwargs)
+            logger.info("Đã kết nối W&B thành công: %s", wandb_run.url)
+        except Exception as e:
+            logger.warning("Không thể khởi tạo W&B (%s), tiếp tục huấn luyện với logger tiêu chuẩn.", e)
 
     output_dir = train_cfg.get("output_dir", "checkpoints")
     checkpoint_interval = train_cfg.get("checkpoint_interval_epochs", 5)
 
-    for epoch in range(start_epoch, epochs + 1):
+    for epoch in range(start_epoch, total_epochs + 1):
         model.train()
         total_epoch_loss = 0.0
+        total_ce_loss = 0.0
+        total_reg_loss = 0.0
         num_batches = 0
 
         for f_path in feature_files:
             data = load_file(str(f_path))
-            hidden_states = data["hidden_states"].to(device)
+            hidden_states = data["hidden_states"].to(device=device, dtype=dtype)
             input_ids = data["input_ids"].to(device)
             num_samples = hidden_states.size(0)
 
-            for b in range(0, num_samples, batch_size):
-                b_hidden = hidden_states[b : b + batch_size]
-                b_ids = input_ids[b : b + batch_size]
+            for b in range(0, num_samples, effective_batch_size):
+                b_hidden = hidden_states[b : b + effective_batch_size]
+                b_ids = input_ids[b : b + effective_batch_size]
 
-                # Chuẩn bị input/target
-                # Giả lập token embeddings từ hidden states hoặc projection
+                # Chuẩn bị input/target (đảm bảo contiguous memory layout)
                 token_embeddings = b_hidden.clone()
-                target_tokens = b_ids[:, 1:]
-                target_hidden = b_hidden[:, 1:, :]
+                target_tokens = b_ids[:, 1:].contiguous()
+                target_hidden = b_hidden[:, 1:, :].contiguous()
+                input_hidden = b_hidden[:, :-1, :].contiguous()
+                input_embeds = token_embeddings[:, :-1, :].contiguous()
 
-                logits, pred_hidden = model(b_hidden[:, :-1, :], token_embeddings[:, :-1, :])
+                logits, pred_hidden = model(input_hidden, input_embeds)
 
                 loss, metrics = loss_fn(logits, target_tokens, pred_hidden, target_hidden)
                 loss = loss / grad_accum_steps
@@ -188,22 +213,65 @@ def main():
                     optimizer.zero_grad()
 
                 total_epoch_loss += metrics["total_loss"]
+                total_ce_loss += metrics["ce_loss"]
+                total_reg_loss += metrics["reg_loss"]
                 num_batches += 1
                 global_step += 1
 
+                # Log step định kỳ lên W&B
+                if wandb_run and global_step % 20 == 0:
+                    wandb.log({
+                        "step": global_step,
+                        "step/total_loss": metrics["total_loss"],
+                        "step/ce_loss": metrics["ce_loss"],
+                        "step/reg_loss": metrics["reg_loss"],
+                        "step/learning_rate": scheduler.get_last_lr()[0],
+                    })
+
         scheduler.step()
         avg_loss = total_epoch_loss / max(num_batches, 1)
-        logger.info("Epoch [%d/%d] - Avg Loss: %.4f - LR: %.6f", epoch, epochs, avg_loss, scheduler.get_last_lr()[0])
+        avg_ce = total_ce_loss / max(num_batches, 1)
+        avg_reg = total_reg_loss / max(num_batches, 1)
+        current_lr = scheduler.get_last_lr()[0]
+
+        logger.info(
+            "Epoch [%d/%d] - Avg Loss: %.4f (CE: %.4f, SmoothL1: %.4f) - LR: %.6f",
+            epoch, total_epochs, avg_loss, avg_ce, avg_reg, current_lr,
+        )
+
+        if wandb_run:
+            wandb.log({
+                "epoch": epoch,
+                "epoch/total_loss": avg_loss,
+                "epoch/ce_loss": avg_ce,
+                "epoch/reg_loss": avg_reg,
+                "epoch/learning_rate": current_lr,
+            })
 
         # OOM Guard: Thu gom rác bộ nhớ sau mỗi epoch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         # Lưu checkpoint theo chu kỳ
-        if epoch % checkpoint_interval == 0 or epoch == epochs:
+        if epoch % checkpoint_interval == 0 or epoch == total_epochs:
             save_checkpoint(model, optimizer, scheduler, epoch, global_step, output_dir)
 
+    if wandb_run:
+        wandb.finish()
+
     logger.info("Quá trình huấn luyện đã hoàn thành thành công!")
+
+
+def main():
+    args = parse_training_args()
+    config = load_training_config(args.config)
+    run_training(
+        config=config,
+        resume=args.resume,
+        checkpoint_path=args.checkpoint_path,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+    )
 
 
 if __name__ == "__main__":
