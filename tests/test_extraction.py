@@ -33,7 +33,66 @@ def test_check_disk_space_fail():
         assert check_disk_space("/workspace", min_free_gb=50) is False
 
 def test_parse_extraction_args():
-    args = parse_extraction_args(["--target-layer", "28", "--chunk-size", "5000"])
+    args = parse_extraction_args(["--target-layer", "28", "--chunk-size", "5000", "--force"])
     assert args.target_layer == 28
     assert args.chunk_size == 5000
     assert args.model_id == "Qwen/Qwen2.5-7B-Instruct"
+    assert args.force is True
+
+
+def test_scan_existing_chunks_empty_and_non_existent(tmp_path):
+    from extraction.extract_hidden_states import scan_existing_chunks
+    completed, next_idx = scan_existing_chunks(tmp_path)
+    assert completed == {}
+    assert next_idx == 0
+
+    completed_ne, next_idx_ne = scan_existing_chunks(tmp_path / "not_found")
+    assert completed_ne == {}
+    assert next_idx_ne == 0
+
+
+def test_scan_existing_chunks_with_mocked_safetensors(tmp_path):
+    from unittest.mock import MagicMock
+    from pathlib import Path
+    import sys
+    from extraction.extract_hidden_states import scan_existing_chunks
+
+    chunk_shapes = {
+        "features_chunk_0000.safetensors": (5000, 512, 3584),
+        "features_chunk_0001.safetensors": (5000, 512, 3584),
+        "features_chunk_0002.safetensors": (5000, 512, 3584),
+        "features_chunk_0003.safetensors": (229, 512, 3584),
+        "features_chunk_0004.safetensors": (5000, 1024, 3584),
+        "features_chunk_0005.safetensors": (463, 1024, 3584),
+    }
+
+    for fname in chunk_shapes:
+        (tmp_path / fname).write_text("dummy")
+
+    class MockSafeOpen:
+        def __init__(self, path, framework, device):
+            self.fname = Path(path).name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+        def keys(self):
+            return ["hidden_states", "input_ids"]
+
+        def get_slice(self, key):
+            mock_slice = MagicMock()
+            mock_slice.get_shape.return_value = chunk_shapes[self.fname]
+            return mock_slice
+
+    mock_mod = MagicMock()
+    mock_mod.safe_open = MockSafeOpen
+
+    with patch.dict(sys.modules, {"safetensors": mock_mod}):
+        completed, next_idx = scan_existing_chunks(tmp_path)
+
+    assert completed[512] == 15229
+    assert completed[1024] == 5463
+    assert next_idx == 6

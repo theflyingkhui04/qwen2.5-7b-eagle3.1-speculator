@@ -74,7 +74,13 @@ def extract_features(
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from safetensors.torch import save_file
-    from extraction.extract_hidden_states import bucket_sequences
+    from extraction.extract_hidden_states import bucket_sequences, scan_existing_chunks
+
+    # Làm mới Volume view nếu cần
+    try:
+        volume.reload()
+    except Exception:
+        pass
 
     dataset_path = "/root/data/processed/hybrid_dataset.json"
     features_dir = Path("/vol/features")
@@ -95,6 +101,32 @@ def extract_features(
         dataset = dataset[:50]
         chunk_size = 50
 
+    buckets = bucket_sequences(dataset)
+    total_needed = sum(len(s) for s in buckets.values())
+
+    completed_per_bucket = {}
+    chunk_idx = 0
+
+    # 1. Quét các chunk đã có sẵn trên Modal Volume để tự động Resume
+    if not force:
+        completed_per_bucket, next_chunk_idx = scan_existing_chunks(features_dir)
+        total_completed = sum(completed_per_bucket.get(b, 0) for b in buckets.keys())
+
+        if total_completed >= total_needed and total_needed > 0:
+            print(f"[RESUME] Toan bo {total_completed}/{total_needed} mau da duoc trich xuat day du tren Modal Volume ({len(list(features_dir.glob('features_chunk_*.safetensors')))} chunks).")
+            print("Bo qua buoc trich xuat va chuyen thang sang buoc tiep theo de tiet kiem chi phi GPU!")
+            return str(features_dir)
+
+        if completed_per_bucket:
+            print(f"[RESUME] Phat hien tien trinh trich xuat cu tren Modal Volume:")
+            for b_len, done_count in sorted(completed_per_bucket.items()):
+                target_count = len(buckets.get(b_len, []))
+                print(f"  - Bucket len <= {b_len}: da xong {done_count}/{target_count} mau")
+            print(f"  -> Se tiep tuc luu tu chunk index {next_chunk_idx} (features_chunk_{next_chunk_idx:04d}.safetensors)")
+        chunk_idx = next_chunk_idx
+    else:
+        print("[FORCE] Che do force duoc bat: Bat dau trich xuat lai tu dau va ghi de!")
+
     print(f"Bat dau trich xuat features tu {len(dataset)} mau...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Thiet bi kha dung: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
@@ -108,15 +140,23 @@ def extract_features(
     )
     model.eval()
 
-    buckets = bucket_sequences(dataset)
-    chunk_idx = 0
     buffer_hidden = []
     buffer_ids = []
 
     for bucket_len, samples in buckets.items():
         if not samples:
             continue
-        print(f"Dang xu ly bucket len <= {bucket_len} ({len(samples)} mau)...")
+
+        done_in_bucket = completed_per_bucket.get(bucket_len, 0)
+        if not force and done_in_bucket >= len(samples):
+            print(f"[RESUME] Bucket len <= {bucket_len} ({len(samples)} mau) da hoan thanh 100%. Bo qua!")
+            continue
+        elif not force and done_in_bucket > 0:
+            print(f"[RESUME] Bucket len <= {bucket_len}: da co {done_in_bucket}/{len(samples)} mau. Chay tiep tu mau {done_in_bucket}...")
+            samples = samples[done_in_bucket:]
+        else:
+            print(f"Dang xu ly bucket len <= {bucket_len} ({len(samples)} mau)...")
+
         buffer_hidden = []
         buffer_ids = []
         for i in range(0, len(samples), batch_size):
@@ -150,7 +190,8 @@ def extract_features(
                     },
                     str(chunk_file),
                 )
-                print(f"Da luu chunk {chunk_idx} (len={bucket_len}) -> {chunk_file}")
+                volume.commit()
+                print(f"Da luu va commit an toan chunk {chunk_idx} (len={bucket_len}) -> {chunk_file}")
                 chunk_idx += 1
                 buffer_hidden.clear()
                 buffer_ids.clear()
@@ -166,7 +207,8 @@ def extract_features(
                 },
                 str(chunk_file),
             )
-            print(f"Da luu chunk {chunk_idx} (len={bucket_len}) -> {chunk_file}")
+            volume.commit()
+            print(f"Da luu va commit an toan chunk {chunk_idx} (len={bucket_len}) -> {chunk_file}")
             chunk_idx += 1
             buffer_hidden.clear()
             buffer_ids.clear()
@@ -308,7 +350,7 @@ def main(
 
     elif step == "all":
         print(">>> [FULL PIPELINE] Chay tuan tu Trich xuat -> Huan luyen -> Upload...")
-        extract_features.remote()
+        extract_features.remote(force=force)
         train_head.remote(epochs=epochs)
         export_and_upload.remote(repo_id=repo_id, target_epoch=epochs)
         print(">>> [SUCCESS] HOAN TAT TOAN BO PIPELINE HUAN LUYEN TREN MODAL.COM!")

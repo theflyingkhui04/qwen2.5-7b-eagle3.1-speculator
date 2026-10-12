@@ -12,7 +12,9 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -32,6 +34,53 @@ def check_disk_space(path: str, min_free_gb: float = 50.0) -> bool:
     except Exception as e:
         logger.warning("Không thể kiểm tra dung lượng ổ đĩa: %s", e)
         return True
+
+
+def scan_existing_chunks(features_dir: Path) -> Tuple[Dict[int, int], int]:
+    """
+    Quét các file features_chunk_*.safetensors có sẵn trong thư mục để phục vụ Resume.
+    Trả về:
+    - completed_per_bucket: Dict[int, int] {bucket_len: total_samples_saved}
+    - next_chunk_idx: int (chỉ số chunk tiếp theo cần lưu, bắt đầu từ max_idx + 1 hoặc 0)
+    """
+    completed_per_bucket: Dict[int, int] = {}
+    max_chunk_idx = -1
+
+    if not features_dir.exists():
+        return completed_per_bucket, 0
+
+    chunk_files = sorted(features_dir.glob("features_chunk_*.safetensors"))
+    if not chunk_files:
+        return completed_per_bucket, 0
+
+    try:
+        from safetensors import safe_open
+        has_safetensors = True
+    except ImportError:
+        logger.warning("Không thể import safe_open từ safetensors để quét metadata chunk cũ.")
+        has_safetensors = False
+
+    for f_path in chunk_files:
+        match = re.search(r"features_chunk_(\d+)\.safetensors", f_path.name)
+        if match:
+            idx = int(match.group(1))
+            if idx > max_chunk_idx:
+                max_chunk_idx = idx
+
+        if has_safetensors:
+            try:
+                with safe_open(str(f_path), framework="pt", device="cpu") as f:
+                    if "hidden_states" in f.keys():
+                        shape = f.get_slice("hidden_states").get_shape()
+                        # shape: (num_samples, seq_len, hidden_dim)
+                        num_samples = shape[0]
+                        seq_len = shape[1]
+                        completed_per_bucket[seq_len] = completed_per_bucket.get(seq_len, 0) + num_samples
+            except Exception as e:
+                logger.warning("File chunk %s không hợp lệ hoặc bị lỗi đọc: %s", f_path.name, e)
+
+    next_chunk_idx = max_chunk_idx + 1 if max_chunk_idx >= 0 else 0
+    return completed_per_bucket, next_chunk_idx
 
 
 def bucket_sequences(samples: List[Dict[str, Any]], bucket_limits: Optional[List[int]] = None) -> Dict[int, List[Dict[str, Any]]]:
@@ -74,6 +123,7 @@ def parse_extraction_args(args: Optional[List[str]] = None) -> argparse.Namespac
     parser.add_argument("--chunk-size", type=int, default=5000, help="Số mẫu trên mỗi file safetensors chunk")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size khi forward model lớn")
     parser.add_argument("--min-disk-gb", type=float, default=50.0, help="Dung lượng đĩa trống tối thiểu (GB)")
+    parser.add_argument("--force", action="store_true", help="Trích xuất lại từ đầu, bỏ qua các chunk đã có")
     return parser.parse_args(args)
 
 
@@ -93,6 +143,38 @@ def run_extraction():
         logger.error("Cần cài đặt torch, transformers và safetensors trên môi trường chạy thực tế!")
         sys.exit(1)
 
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(args.dataset_path, "r", encoding="utf-8") as f:
+        dataset = json.load(f)
+
+    logger.info("Tổng số mẫu: %d. Bắt đầu phân nhóm độ dài...", len(dataset))
+    buckets = bucket_sequences(dataset)
+    total_needed = sum(len(s) for s in buckets.values())
+
+    completed_per_bucket = {}
+    chunk_idx = 0
+
+    if not getattr(args, "force", False):
+        completed_per_bucket, next_chunk_idx = scan_existing_chunks(out_dir)
+        total_completed = sum(completed_per_bucket.get(b, 0) for b in buckets.keys())
+
+        if total_completed >= total_needed and total_needed > 0:
+            logger.info("Toàn bộ %d/%d mẫu đã được trích xuất đầy đủ (%d chunks). Bỏ qua trích xuất!",
+                        total_completed, total_needed, len(list(out_dir.glob("features_chunk_*.safetensors"))))
+            return
+
+        if completed_per_bucket:
+            logger.info("Phát hiện tiến trình trích xuất cũ tại %s:", out_dir)
+            for b_len, count in sorted(completed_per_bucket.items()):
+                target_count = len(buckets.get(b_len, []))
+                logger.info("  - Bucket len <= %d: đã xong %d/%d mẫu", b_len, count, target_count)
+            logger.info("  -> Tiếp tục từ chunk index: %d", next_chunk_idx)
+        chunk_idx = next_chunk_idx
+    else:
+        logger.info("Chế độ force: Trích xuất lại từ đầu và ghi đè các chunk cũ.")
+
     logger.info("Đang nạp Target Model: %s ở định dạng bfloat16...", args.model_id)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
@@ -104,24 +186,23 @@ def run_extraction():
     )
     model.eval()
 
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(args.dataset_path, "r", encoding="utf-8") as f:
-        dataset = json.load(f)
-
-    logger.info("Tổng số mẫu: %d. Bắt đầu phân nhóm độ dài...", len(dataset))
-    buckets = bucket_sequences(dataset)
-
-    chunk_idx = 0
     buffer_hidden = []
-    buffer_target = []
     buffer_ids = []
 
     for bucket_len, samples in buckets.items():
         if not samples:
             continue
-        logger.info("Xử lý bucket <= %d: %d mẫu", bucket_len, len(samples))
+
+        done_in_bucket = completed_per_bucket.get(bucket_len, 0)
+        if not getattr(args, "force", False) and done_in_bucket >= len(samples):
+            logger.info("Bucket <= %d (%d mẫu) đã hoàn thành 100%%. Bỏ qua!", bucket_len, len(samples))
+            continue
+        elif not getattr(args, "force", False) and done_in_bucket > 0:
+            logger.info("Bucket <= %d: đã có %d/%d mẫu. Chạy tiếp từ mẫu %d...", bucket_len, done_in_bucket, len(samples), done_in_bucket)
+            samples = samples[done_in_bucket:]
+        else:
+            logger.info("Xử lý bucket <= %d: %d mẫu", bucket_len, len(samples))
+
         buffer_hidden = []
         buffer_ids = []
         for i in range(0, len(samples), args.batch_size):
