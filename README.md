@@ -77,18 +77,33 @@ qwen2.5-7b-eagle3.1-speculator/
        --resume
    ```
 
-4. **Bước 4: Đóng gói Chuẩn Hugging Face & Upload:**
-   Chuyển đổi trọng số sang `float16` (đảm bảo tương thích 100% với Tesla T4) và đẩy lên Hugging Face Hub.
-   ```bash
-   export HF_TOKEN="hf_your_token_here"
-   python export/package_and_upload.py \
-       --checkpoint-path "checkpoints/checkpoint_epoch_20.pt" \
-       --config-path "configs/eagle3_qwen2.5_7b.json" \
-       --output-dir "output/eagle3_qwen2.5_7b" \
-       --repo-id "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator" \
-       --precision "float16" \
-       --upload
-   ```
+4. **Bước 4: Đóng gói Chuẩn vLLM & Upload Hugging Face (Export & Package):**
+   * **Tại sao cần đóng gói?** File `checkpoint_epoch_20.pt` chứa cả optimizer và scheduler của PyTorch (~1.6 GB) nên vLLM không thể nhận diện trực tiếp. Script đóng gói thực hiện 4 nhiệm vụ cốt lõi:
+     1. Lọc sạch optimizer và scheduler, chỉ trích xuất đúng trọng số mô hình (`model_state_dict`).
+     2. Ép kiểu trọng số sang `float16` (giảm dung lượng xuống còn ~540 MB, tương thích 100% với kiến trúc Turing trên Tesla T4).
+     3. Lưu thành file an toàn `model.safetensors` (loại bỏ nguy cơ pickle injection, tốc độ nạp nhanh gấp 10 lần).
+     4. Sinh file `config.json` chuẩn Hugging Face (`architectures: ["EagleQwen2ForCausalLM"]`, `target_layer: 28`).
+   * **Cấu trúc thư mục thành phẩm sau khi đóng gói:**
+     ```text
+     output/eagle3_qwen2.5_7b/
+     ├── config.json          # Cấu hình vLLM nhận diện đầu nháp EAGLE-3.1
+     └── model.safetensors    # Trọng số float16 (~540 MB)
+     ```
+   * **Lệnh chạy đóng gói thủ công (Local / Server):**
+     ```bash
+     export HF_TOKEN="hf_your_token_here"
+     python export/package_and_upload.py \
+         --checkpoint-path "checkpoints/checkpoint_epoch_20.pt" \
+         --config-path "configs/eagle3_qwen2.5_7b.json" \
+         --output-dir "output/eagle3_qwen2.5_7b" \
+         --repo-id "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator" \
+         --precision "float16" \
+         --upload
+     ```
+   * **Lệnh chạy đóng gói trực tiếp trên Modal:**
+     ```bash
+     modal run modal_pipeline.py --step export --repo-id "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator"
+     ```
 
 ---
 
@@ -144,6 +159,13 @@ Tự động chạy tuần tự: Trích xuất 30.000 mẫu trên A100-80GB -> H
 ```bash
 modal run modal_pipeline.py --step all --epochs 20
 ```
+
+> **Mẹo chạy ngầm tắt máy đi ngủ (`--detach` hoặc `-d`):**  
+> Thêm cờ `--detach` để ứng dụng chạy độc lập trên đám mây Modal:
+> ```bash
+> modal run --detach modal_pipeline.py --step all --epochs 20
+> ```
+> Sau khi màn hình hiển thị liên kết App, bạn có thể **tắt terminal, đóng nắp laptop đi ngủ**. Pipeline sẽ tự động hoàn tất, tự commit checkpoint vào Volume, tự đẩy lên Hugging Face và tự động tắt GPU A100.
 
 #### 3. Chạy độc lập từng bước (Tùy chọn linh hoạt):
 Nếu muốn chạy riêng lẻ từng giai đoạn:
