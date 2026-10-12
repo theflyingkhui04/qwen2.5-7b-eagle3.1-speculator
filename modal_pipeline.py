@@ -211,11 +211,15 @@ def train_head(
     checkpoint_dir = Path("/vol/checkpoints")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    def on_epoch_finished(ep: int):
+        volume.commit()
+        print(f">>> [CHECKPOINT] Da commit an toan checkpoint_epoch_{ep}.pt vao Modal Volume!")
+
     print(f"Bat dau huan luyen EAGLE-3.1 ({cfg['training']['epochs']} epochs)...")
-    run_training(cfg, resume=True)
+    run_training(cfg, resume=True, on_epoch_end=on_epoch_finished)
 
     volume.commit()
-    print("Hoan tat huan luyen va da commit checkpoint vao Modal Volume!")
+    print("Hoan tat huan luyen va da commit toan bo checkpoint vao Modal Volume!")
     return str(checkpoint_dir)
 
 

@@ -92,6 +92,7 @@ def run_training(
     checkpoint_path: Optional[str] = None,
     epochs: Optional[int] = None,
     batch_size: Optional[int] = None,
+    on_epoch_end: Optional[Any] = None,
 ):
     try:
         import torch
@@ -176,7 +177,7 @@ def run_training(
             logger.warning("Không thể khởi tạo W&B (%s), tiếp tục huấn luyện với logger tiêu chuẩn.", e)
 
     output_dir = train_cfg.get("output_dir", "checkpoints")
-    checkpoint_interval = train_cfg.get("checkpoint_interval_epochs", 5)
+    checkpoint_interval = train_cfg.get("checkpoint_interval_epochs", 1)
 
     for epoch in range(start_epoch, total_epochs + 1):
         model.train()
@@ -252,9 +253,14 @@ def run_training(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Lưu checkpoint theo chu kỳ
+        # Lưu checkpoint theo chu kỳ (mỗi epoch) và kích hoạt on_epoch_end
         if epoch % checkpoint_interval == 0 or epoch == total_epochs:
             save_checkpoint(model, optimizer, scheduler, epoch, global_step, output_dir)
+            if on_epoch_end:
+                try:
+                    on_epoch_end(epoch)
+                except Exception as e:
+                    logger.warning("Lỗi trong on_epoch_end callback: %s", e)
 
     if wandb_run:
         wandb.finish()
