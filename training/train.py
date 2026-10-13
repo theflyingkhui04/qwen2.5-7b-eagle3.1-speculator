@@ -163,15 +163,22 @@ def run_training(
     if os.environ.get("WANDB_API_KEY"):
         try:
             import wandb
-            wandb_entity = os.environ.get("WANDB_ENTITY", None)
+            # Ưu tiên cấu hình lưu vào Team itsduckhoi04-ptit
+            wandb_entity = os.environ.get("WANDB_ENTITY", "itsduckhoi04-ptit")
+
             init_kwargs = {
                 "project": "qwen2.5-eagle3.1-speculator",
                 "name": f"eagle3.1-qwen2.5-7b-{total_epochs}ep",
                 "config": config,
+                "entity": wandb_entity,
             }
-            if wandb_entity:
-                init_kwargs["entity"] = wandb_entity
-            wandb_run = wandb.init(**init_kwargs)
+            try:
+                wandb_run = wandb.init(**init_kwargs)
+            except Exception as e_team:
+                logger.warning("Không thể khởi tạo W&B trong Team '%s' (%s). Đang tự động fallback về tài khoản cá nhân...", wandb_entity, e_team)
+                init_kwargs["entity"] = "itsduckhoi04"
+                wandb_run = wandb.init(**init_kwargs)
+
             logger.info("Đã kết nối W&B thành công: %s", wandb_run.url)
         except Exception as e:
             logger.warning("Không thể khởi tạo W&B (%s), tiếp tục huấn luyện với logger tiêu chuẩn.", e)
@@ -188,20 +195,21 @@ def run_training(
 
         for f_path in feature_files:
             data = load_file(str(f_path))
-            hidden_states = data["hidden_states"].to(device=device, dtype=dtype)
-            input_ids = data["input_ids"].to(device)
+            # Giữ hidden_states và input_ids trên host RAM (CPU) của container, KHÔNG nạp cả chunk 36GB vào GPU VRAM!
+            hidden_states = data["hidden_states"]
+            input_ids = data["input_ids"]
             num_samples = hidden_states.size(0)
 
             for b in range(0, num_samples, effective_batch_size):
-                b_hidden = hidden_states[b : b + effective_batch_size]
-                b_ids = input_ids[b : b + effective_batch_size]
+                # Chỉ đưa đúng mini-batch (vài chục MB) vào GPU VRAM
+                b_hidden = hidden_states[b : b + effective_batch_size].to(device=device, dtype=dtype)
+                b_ids = input_ids[b : b + effective_batch_size].to(device=device)
 
                 # Chuẩn bị input/target (đảm bảo contiguous memory layout)
-                token_embeddings = b_hidden.clone()
                 target_tokens = b_ids[:, 1:].contiguous()
                 target_hidden = b_hidden[:, 1:, :].contiguous()
                 input_hidden = b_hidden[:, :-1, :].contiguous()
-                input_embeds = token_embeddings[:, :-1, :].contiguous()
+                input_embeds = b_hidden[:, :-1, :].contiguous()
 
                 logits, pred_hidden = model(input_hidden, input_embeds)
 
@@ -218,6 +226,14 @@ def run_training(
                 total_reg_loss += metrics["reg_loss"]
                 num_batches += 1
                 global_step += 1
+
+                # Giải phóng bộ nhớ batch sau mỗi step
+                del b_hidden, b_ids, target_tokens, target_hidden, input_hidden, input_embeds, logits, pred_hidden, loss
+
+            # Dọn dẹp RAM container và VRAM sau mỗi chunk
+            del data, hidden_states, input_ids
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
                 # Log step định kỳ lên W&B
                 if wandb_run and global_step % 20 == 0:

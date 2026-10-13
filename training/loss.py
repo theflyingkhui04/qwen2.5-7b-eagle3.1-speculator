@@ -48,16 +48,18 @@ class EagleDualLoss(ModuleBase):
         flat_targets = target_token_ids.reshape(-1)
 
         # 1. Classification Cross-Entropy Loss
-        ce_loss = self.ce_loss_fn(flat_logits.float(), flat_targets)
+        # PyTorch CrossEntropyLoss hỗ trợ trực tiếp bfloat16 trên CUDA và tự động tính log-sum-exp bằng fp32 nội bộ.
+        # Không ép kiểu flat_logits sang float32 để tránh cấp phát thêm 10-20GB VRAM với vocab 152k của Qwen2.5!
+        ce_loss = self.ce_loss_fn(flat_logits, flat_targets)
 
         # 2. Regression Smooth L1 Loss trên không gian vector ẩn
         if loss_mask is not None:
             mask = loss_mask.unsqueeze(-1).expand_as(pred_hidden)
             masked_pred = pred_hidden * mask
             masked_target = target_hidden * mask
-            reg_loss = self.reg_loss_fn(masked_pred.float(), masked_target.float())
+            reg_loss = self.reg_loss_fn(masked_pred, masked_target)
         else:
-            reg_loss = self.reg_loss_fn(pred_hidden.float(), target_hidden.float())
+            reg_loss = self.reg_loss_fn(pred_hidden, target_hidden)
 
         # 3. Kết hợp Dual Loss
         total_loss = self.ce_weight * ce_loss + self.smooth_l1_weight * reg_loss

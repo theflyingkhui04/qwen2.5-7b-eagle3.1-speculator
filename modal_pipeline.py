@@ -26,6 +26,7 @@ volume = modal.Volume.from_name("qwen-eagle3-volume", create_if_missing=True)
 # 2. Xây dựng Container Image với đầy đủ thư viện AI/ML cần thiết
 app_image = (
     modal.Image.debian_slim(python_version="3.11")
+    .env({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
     .pip_install(
         "torch>=2.2.0",
         "transformers>=4.40.0",
@@ -225,19 +226,22 @@ def extract_features(
 # ------------------------------------------------------------------------------
 @app.function(
     gpu="A100-80GB",
-    timeout=14400,
+    timeout=28800,  # 8 giờ tối đa để tránh bị ngắt quãng
     volumes={"/vol": volume},
     secrets=[modal.Secret.from_name("wandb-secret")],
 )
 def train_head(
     epochs: int = 20,
-    batch_size: int = 16,
+    batch_size: int = 8,
     lr: float = 3e-4,
     test_mode: bool = False,
 ):
+    import os
     import yaml
     from pathlib import Path
     from training.train import run_training
+
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     config_path = "/root/configs/train_config.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
@@ -248,6 +252,7 @@ def train_head(
     cfg["training"]["output_dir"] = "/vol/checkpoints"
     cfg["training"]["epochs"] = 1 if test_mode else epochs
     cfg["training"]["batch_size"] = 4 if test_mode else batch_size
+    cfg["training"]["gradient_accumulation_steps"] = 4 if batch_size <= 8 else 2
     cfg["training"]["learning_rate"] = lr
 
     checkpoint_dir = Path("/vol/checkpoints")
@@ -323,11 +328,12 @@ def main(
     step: str = "test",
     repo_id: str = "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator",
     epochs: int = 20,
+    batch_size: int = 8,
     force: bool = False,
 ):
     print("=" * 70)
     print(f"[START] Khoi chay EAGLE-3.1 Serverless Pipeline tren Modal.com")
-    print(f"Mode/Step: {step.upper()}")
+    print(f"Mode/Step: {step.upper()} | Epochs: {epochs} | Batch Size: {batch_size}")
     print("=" * 70)
 
     if step == "test":
@@ -341,8 +347,8 @@ def main(
         extract_features.remote(force=force)
 
     elif step == "train":
-        print(f">>> [BUOC 2/3] Huan luyen dau nhap EAGLE-3.1 ({epochs} Epochs)...")
-        train_head.remote(epochs=epochs)
+        print(f">>> [BUOC 2/3] Huan luyen dau nhap EAGLE-3.1 ({epochs} Epochs, batch_size={batch_size})...")
+        train_head.remote(epochs=epochs, batch_size=batch_size)
 
     elif step == "export":
         print(f">>> [BUOC 3/3] Dong goi float16 va upload len Hugging Face ({repo_id})...")
@@ -351,7 +357,7 @@ def main(
     elif step == "all":
         print(">>> [FULL PIPELINE] Chay tuan tu Trich xuat -> Huan luyen -> Upload...")
         extract_features.remote(force=force)
-        train_head.remote(epochs=epochs)
+        train_head.remote(epochs=epochs, batch_size=batch_size)
         export_and_upload.remote(repo_id=repo_id, target_epoch=epochs)
         print(">>> [SUCCESS] HOAN TAT TOAN BO PIPELINE HUAN LUYEN TREN MODAL.COM!")
 
