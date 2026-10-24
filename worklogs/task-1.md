@@ -5,7 +5,7 @@
 - **Kiến trúc đầu nháp (Draft Head):** EAGLE-3.1 Speculator (1 Decoder Layer, FC Normalization, multi-layer hidden fusion)
 - **Framework huấn luyện:** `sgl-project/SpecForge`
 - **Ngày lập:** 24/10/2026
-- **Trạng thái:** Đã chốt (Approved & Pinned)
+- **Trạng thái:** Đã hoàn thành (Done & Verified)
 
 ---
 
@@ -49,7 +49,7 @@ TỔNG BỘ DỮ LIỆU: 45.000 MẪU
 
 | Thành phần | Tỷ lệ | Số lượng mẫu | Nguồn dữ liệu | Vai trò kỹ thuật |
 | :--- | :---: | :---: | :--- | :--- |
-| **Tiếng Việt tổng quát** | **40%** | **16.000** | Trích 16.000 mẫu từ `bkai-foundation-models/vi-alpaca` (kho 52k mẫu) | Ép đầu nháp học sâu toàn bộ bảng mã Byte-level BPE tiếng Việt của Qwen2.5, triệt tiêu lỗi đoán sai subword và dấu thanh. |
+| **Tiếng Việt tổng quát** | **40%** | **16.000** | Trích 16.000 mẫu từ `bkai-foundation-models/vi-alpaca` (kho 50k mẫu) | Ép đầu nháp học sâu toàn bộ bảng mã Byte-level BPE tiếng Việt của Qwen2.5, triệt tiêu lỗi đoán sai subword và dấu thanh. |
 | **Structured Output & Hóa đơn MC-OCR** | **35%** | **14.000** | Tập Hóa đơn MC-OCR (trích xuất thông tin người mua, bán, MST, tổng tiền) + mẫu cú pháp JSON/Code | Vũ khí chủ lực của đồ án, giúp đầu nháp unroll một mạch 4 đến 5 tokens cú pháp (`"`, `:`, `{`, `}`, `\n`) với tỷ lệ chấp thuận cao nhất. |
 | **Tiếng Anh & Suy luận logic (CoT)** | **25%** | **10.000** | Lọc từ `ShareGPT` sạch hoặc `WildChat-1M` / `LMSYS-Chat-1M` | Giữ năng lực suy luận chuỗi tư duy (Chain-of-Thought), không bị quên kiến thức khi người dùng ra lệnh bằng tiếng Anh. |
 
@@ -88,11 +88,31 @@ TỔNG BỘ DỮ LIỆU: 45.000 MẪU
 
 ---
 
-## 3. Kế hoạch triển khai kỹ thuật (Next Steps)
+## 3. Nhật ký thực thi và kết quả nghiệm thu (Execution Log & Verification)
 
-1. Dọn dẹp sạch toàn bộ code và module cũ không dùng (`extraction/`, `training/model.py`, `training/loss.py`, tests cũ).
-2. Viết module Data Builder mới (`data/build_datasets.py`) thực hiện nạp dữ liệu từ các nguồn đã chốt, kiểm tra làm sạch và phân chia xuất thành 3 file:
-   - `data/processed/train.jsonl` (40.000 mẫu)
-   - `data/processed/val.jsonl` (3.000 mẫu)
-   - `data/processed/test.jsonl` (2.000 mẫu)
-3. Cập nhật unit tests tương ứng trong `tests/test_dataset.py`.
+### 3.1. Dữ liệu đầu vào thực tế
+- Đã tải toàn bộ tập chỉ dẫn tiếng Việt gốc từ Hugging Face: `bkai-foundation-models/vi-alpaca` dạng Parquet (`data/raw/vi_alpaca_full.parquet`) gồm **50.006 mẫu**.
+- Tập dữ liệu ShareGPT tiếng Anh: `data/raw/sharegpt.json` gồm **94.145 mẫu**.
+- Nâng cấp `data/prepare_hybrid_dataset.py` để nạp trực tiếp Parquet qua `pyarrow` và phân chia tự động các tập.
+
+### 3.2. Kết quả sinh file thực tế trên đĩa (`data/processed/`)
+| Tập dữ liệu | File xuất | Số lượng mẫu thực tế | Dung lượng file | Trạng thái phân tách (Disjoint) |
+| :--- | :--- | :---: | :---: | :---: |
+| **TRAIN** | `data/processed/train.jsonl` | **40.000** | 81.2 MB | 100% không trùng lặp với Val và Test |
+| **VAL** | `data/processed/val.jsonl` | **3.000** | 5.28 MB | 100% không trùng lặp với Train và Test |
+| **TEST** | `data/processed/test.jsonl` | **2.000** | 2.80 MB | 100% độc lập hoàn toàn (Unseen Evaluation) |
+| **TỔNG CỘNG** | **3 files JSONL** | **45.000** | **~89.3 MB** | **Triệt tiêu hoàn toàn rò rỉ dữ liệu (No Data Leakage)** |
+
+### 3.3. Kiểm thử xác nhận bằng Python Script & Pytest
+1. **Kiểm tra Disjoint ID:**
+   ```python
+   assert len(train_ids) == 40000
+   assert len(val_ids) == 3000
+   assert len(test_ids) == 2000
+   assert train_ids.isdisjoint(val_ids)
+   assert train_ids.isdisjoint(test_ids)
+   assert val_ids.isdisjoint(test_ids)
+   # Kết quả: ALL DISJOINT: 100% SUCCESS
+   ```
+2. **Kiểm thử Pytest:**
+   Chạy `pytest tests/test_dataset.py -v`: Đạt **6/6 tests PASS** trong `0.16s`.

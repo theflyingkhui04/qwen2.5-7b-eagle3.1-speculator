@@ -4,6 +4,7 @@ from pathlib import Path
 from data.prepare_hybrid_dataset import (
     filter_and_format_conversation,
     build_hybrid_dataset,
+    build_train_val_test_splits,
 )
 
 
@@ -111,3 +112,67 @@ def test_build_hybrid_dataset_outputs_jsonl(tmp_path: Path):
             assert "from" in turn
             assert "value" in turn
             assert turn["from"] in ["human", "gpt"]
+
+
+def test_build_train_val_test_splits(tmp_path: Path):
+    vi_file = tmp_path / "vi.json"
+    inv_file = tmp_path / "invoice.json"
+    en_file = tmp_path / "en.json"
+    out_dir = tmp_path / "processed"
+
+    dummy_vi = [
+        {"id": f"vi_{i}", "conversations": [{"from": "human", "value": f"Hỏi TV {i}"}, {"from": "gpt", "value": f"Đáp TV {i}"}]}
+        for i in range(25)
+    ]
+    dummy_inv = [
+        {"id": f"inv_{i}", "conversations": [{"from": "human", "value": f"Hóa đơn {i}"}, {"from": "gpt", "value": f'{{"mst": "{i}"}}'}]}
+        for i in range(25)
+    ]
+    dummy_en = [
+        {"id": f"en_{i}", "conversations": [{"from": "human", "value": f"Prompt {i}"}, {"from": "gpt", "value": f"Step by step {i}"}]}
+        for i in range(25)
+    ]
+
+    vi_file.write_text(json.dumps(dummy_vi), encoding="utf-8")
+    inv_file.write_text(json.dumps(dummy_inv), encoding="utf-8")
+    en_file.write_text(json.dumps(dummy_en), encoding="utf-8")
+
+    stats = build_train_val_test_splits(
+        vietnamese_path=str(vi_file),
+        invoice_path=str(inv_file),
+        english_path=str(en_file),
+        output_dir=str(out_dir),
+        train_counts={"vietnamese": 10, "invoice": 8, "english": 6},
+        val_counts={"vietnamese": 2, "invoice": 2, "english": 2},
+        test_counts={"vietnamese": 3, "invoice": 4, "english": 2},
+        seed=42,
+    )
+
+    train_path = out_dir / "train.jsonl"
+    val_path = out_dir / "val.jsonl"
+    test_path = out_dir / "test.jsonl"
+
+    assert train_path.exists()
+    assert val_path.exists()
+    assert test_path.exists()
+
+    assert stats["train"]["total"] == 24
+    assert stats["val"]["total"] == 6
+    assert stats["test"]["total"] == 9
+
+    train_lines = [json.loads(line) for line in train_path.read_text(encoding="utf-8").strip().split("\n")]
+    val_lines = [json.loads(line) for line in val_path.read_text(encoding="utf-8").strip().split("\n")]
+    test_lines = [json.loads(line) for line in test_path.read_text(encoding="utf-8").strip().split("\n")]
+
+    assert len(train_lines) == 24
+    assert len(val_lines) == 6
+    assert len(test_lines) == 9
+
+    train_ids = {s["id"] for s in train_lines}
+    val_ids = {s["id"] for s in val_lines}
+    test_ids = {s["id"] for s in test_lines}
+
+    # Đảm bảo các tập hoàn toàn phân tách (disjoint) - không rò rỉ dữ liệu (No Data Leakage)
+    assert train_ids.isdisjoint(val_ids), "Tập Train và Val bị trùng lặp mẫu!"
+    assert train_ids.isdisjoint(test_ids), "Tập Train và Test bị trùng lặp mẫu (Data Leakage)!"
+    assert val_ids.isdisjoint(test_ids), "Tập Val và Test bị trùng lặp mẫu!"

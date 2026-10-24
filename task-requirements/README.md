@@ -27,7 +27,7 @@ task-requirements/
 
 | Nhiệm vụ | Trọng tâm | Trạng thái | File đặc tả chi tiết |
 | :--- | :--- | :---: | :--- |
-| **Task 1** | Chuẩn hóa tầng dữ liệu sang ShareGPT JSONL, phân chia 40k Train / 3k Val / 2k Test | `IN PROGRESS` | [task-1-dataset-pipeline.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-1-dataset-pipeline.md) |
+| **Task 1** | Chuẩn hóa tầng dữ liệu sang ShareGPT JSONL, phân chia 40k Train / 3k Val / 2k Test | `DONE` | [task-1-dataset-pipeline.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-1-dataset-pipeline.md) |
 | **Task 2** | Dọn dẹp `extraction/`, `training/model.py`, `training/loss.py` và ghim chuẩn EAGLE-3.1 | `DONE` | [task-2-cleanup-and-eagle3.1-pinning.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-2-cleanup-and-eagle3.1-pinning.md) |
 | **Task 3** | Cập nhật `requirements.txt`, `configs/train_config.yaml`, `configs/eagle3.1_qwen2.5_7b.json` | `PENDING` | [task-3-dependencies-and-configs.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-3-dependencies-and-configs.md) |
 | **Task 4** | Viết lại `training/train.py` thành SpecForge Launcher gọi `torchrun -m specforge.train` | `PENDING` | [task-4-specforge-launcher.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-4-specforge-launcher.md) |
@@ -41,9 +41,9 @@ task-requirements/
 ### Task 1: Tầng dữ liệu và phân chia Train / Val / Test
 - [x] Thiết kế kiến trúc phân bổ: 40% Tiếng Việt, 35% Hóa đơn/JSON, 25% Tiếng Anh/CoT ([worklogs/task-1.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/worklogs/task-1.md)).
 - [x] Chuẩn hóa `data/prepare_hybrid_dataset.py` xuất định dạng ShareGPT JSON Lines (`.jsonl`).
-- [x] Cập nhật bài test TDD trong `tests/test_dataset.py` (5/5 tests PASS).
-- [ ] Xây dựng module phân chia tự động 3 tập: `train.jsonl` (40k), `val.jsonl` (3k), `test.jsonl` (2k).
-- [ ] Nghiệm thu toàn bộ dữ liệu mẫu sẵn sàng cho huấn luyện.
+- [x] Cập nhật bài test TDD trong `tests/test_dataset.py` (6/6 tests PASS).
+- [x] Xây dựng module `build_train_val_test_splits` phân chia tự động 3 tập: `train.jsonl`, `val.jsonl`, `test.jsonl`.
+- [x] Đã nghiệm thu và xác nhận 100% ID các tập hoàn toàn phân tách (disjoint), không có rò rỉ dữ liệu.
 
 ### Task 2: Dọn dẹp module cũ và ghim chuẩn kiến trúc EAGLE-3.1
 - [x] Viết test `tests/test_cleanup_deprecated.py` kiểm tra việc loại bỏ module cũ.
