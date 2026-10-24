@@ -18,6 +18,7 @@
   "target_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
   "target_layer": 28,
   "use_fc_norm": true,
+  "norm_output": true,
   "use_post_norm_feedback": true,
   "torch_dtype": "float16"
 }

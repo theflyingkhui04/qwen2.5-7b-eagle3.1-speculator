@@ -28,7 +28,7 @@ task-requirements/
 | Nhiệm vụ | Trọng tâm | Trạng thái | File đặc tả chi tiết |
 | :--- | :--- | :---: | :--- |
 | **Task 1** | Chuẩn hóa tầng dữ liệu sang ShareGPT JSONL, phân chia 40k Train / 3k Val / 2k Test | `IN PROGRESS` | [task-1-dataset-pipeline.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-1-dataset-pipeline.md) |
-| **Task 2** | Dọn dẹp `extraction/`, `training/model.py`, `training/loss.py` và ghim chuẩn EAGLE-3.1 | `PENDING` | [task-2-cleanup-and-eagle3.1-pinning.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-2-cleanup-and-eagle3.1-pinning.md) |
+| **Task 2** | Dọn dẹp `extraction/`, `training/model.py`, `training/loss.py` và ghim chuẩn EAGLE-3.1 | `DONE` | [task-2-cleanup-and-eagle3.1-pinning.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-2-cleanup-and-eagle3.1-pinning.md) |
 | **Task 3** | Cập nhật `requirements.txt`, `configs/train_config.yaml`, `configs/eagle3.1_qwen2.5_7b.json` | `PENDING` | [task-3-dependencies-and-configs.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-3-dependencies-and-configs.md) |
 | **Task 4** | Viết lại `training/train.py` thành SpecForge Launcher gọi `torchrun -m specforge.train` | `PENDING` | [task-4-specforge-launcher.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-4-specforge-launcher.md) |
 | **Task 5** | Tinh chỉnh `export/package_and_upload.py` để đóng gói checkpoint SpecForge | `PENDING` | [task-5-export-and-packaging.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-5-export-and-packaging.md) |
@@ -46,12 +46,12 @@ task-requirements/
 - [ ] Nghiệm thu toàn bộ dữ liệu mẫu sẵn sàng cho huấn luyện.
 
 ### Task 2: Dọn dẹp module cũ và ghim chuẩn kiến trúc EAGLE-3.1
-- [ ] Viết test `tests/test_cleanup_deprecated.py` kiểm tra việc loại bỏ module cũ.
-- [ ] Xóa toàn bộ thư mục `extraction/` (`extract_hidden_states.py`, `__init__.py`).
-- [ ] Xóa `training/model.py` và `training/loss.py` tự viết cũ.
-- [ ] Xóa các bài test cũ: `tests/test_extraction.py`, `tests/test_loss.py`, `tests/test_model.py`.
-- [ ] Cập nhật `training/__init__.py`.
-- [x] Ghim quy tắc kiến trúc EAGLE-3.1 vào `AGENTS.md` và `configs/eagle3.1_qwen2.5_7b.json`.
+- [x] Viết test `tests/test_cleanup_deprecated.py` kiểm tra việc loại bỏ module cũ.
+- [x] Xóa toàn bộ thư mục `extraction/` (`extract_hidden_states.py`, `__init__.py`).
+- [x] Xóa `training/model.py` và `training/loss.py` tự viết cũ.
+- [x] Xóa các bài test cũ: `tests/test_extraction.py`, `tests/test_loss.py`, `tests/test_model.py`.
+- [x] Cập nhật `training/__init__.py`.
+- [x] Ghim quy tắc kiến trúc EAGLE-3.1 vào `AGENTS.md` và `configs/eagle3.1_qwen2.5_7b.json` (bổ sung `norm_output: true`).
 
 ### Task 3: Cập nhật thư viện và file cấu hình
 - [ ] Cập nhật `requirements.txt` bổ sung `sglang[all]`, `git+https://github.com/sgl-project/SpecForge.git`, `datasets`.
