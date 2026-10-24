@@ -1,7 +1,8 @@
 """
 Script prepare_hybrid_dataset.py
 Gộp dữ liệu ShareGPT_Vicuna_unfiltered (20k) và Tiếng Việt/Hóa đơn MC-OCR (10k)
-Chuẩn hóa cấu trúc hội thoại đa lượt và lưu định dạng JSON.
+Chuẩn hóa cấu trúc hội thoại đa lượt và lưu định dạng ShareGPT JSON Lines (.jsonl)
+tương thích trực tiếp với SpecForge và SGLang data loader.
 """
 
 import argparse
@@ -15,10 +16,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def filter_and_format_conversation(raw_convo: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def filter_and_format_conversation(
+    raw_convo: List[Dict[str, Any]],
+    sample_id: str = "",
+) -> Optional[Dict[str, Any]]:
     """
-    Chuẩn hóa một đoạn hội thoại sang định dạng:
-    {"conversations": [{"role": "user"|"assistant", "content": str}, ...]}
+    Chuẩn hóa một đoạn hội thoại sang định dạng ShareGPT:
+    {
+        "id": sample_id,
+        "conversations": [{"from": "human"|"gpt", "value": str}, ...]
+    }
     Lọc bỏ các đoạn hội thoại rỗng hoặc chỉ có 1 lượt.
     """
     if not raw_convo or not isinstance(raw_convo, list) or len(raw_convo) < 2:
@@ -38,20 +45,29 @@ def filter_and_format_conversation(raw_convo: List[Dict[str, Any]]) -> Optional[
 
         raw_role_lower = str(raw_role).lower()
         if raw_role_lower in ["human", "user"]:
-            role = "user"
+            role = "human"
         elif raw_role_lower in ["gpt", "assistant", "bot"]:
-            role = "assistant"
+            role = "gpt"
         else:
             continue
 
         clean_content = str(content).replace("\u2028", "\n").replace("\u2029", "\n\n").strip()
-        formatted_turns.append({"role": role, "content": clean_content})
+        formatted_turns.append({"from": role, "value": clean_content})
 
-    # Cần tối thiểu 1 cặp user - assistant
+    # Cần tối thiểu 1 cặp human - gpt
     if len(formatted_turns) < 2:
         return None
 
-    return {"conversations": formatted_turns}
+    # Kiểm tra đảm bảo có ít nhất 1 human và 1 gpt
+    has_human = any(t["from"] == "human" for t in formatted_turns)
+    has_gpt = any(t["from"] == "gpt" for t in formatted_turns)
+    if not (has_human and has_gpt):
+        return None
+
+    return {
+        "id": sample_id,
+        "conversations": formatted_turns,
+    }
 
 
 def load_raw_dataset(file_path: str) -> List[Dict[str, Any]]:
@@ -88,7 +104,8 @@ def build_hybrid_dataset(
     seed: int = 42,
 ) -> Dict[str, Any]:
     """
-    Gộp và xáo trộn tập dữ liệu lai theo tỷ lệ xác định.
+    Gộp và xáo trộn tập dữ liệu lai theo tỷ lệ xác định,
+    xuất ra định dạng ShareGPT JSON Lines (.jsonl).
     """
     logger.info("Đang nạp tập dữ liệu ShareGPT từ: %s", sharegpt_path)
     raw_sharegpt = load_raw_dataset(sharegpt_path)
@@ -97,18 +114,20 @@ def build_hybrid_dataset(
     raw_vietnamese = load_raw_dataset(vietnamese_path)
 
     cleaned_sharegpt = []
-    for item in raw_sharegpt:
+    for idx, item in enumerate(raw_sharegpt):
         convo = item.get("conversations") or item.get("messages") or []
-        formatted = filter_and_format_conversation(convo)
+        sample_id = str(item.get("id") or f"sharegpt_{idx}")
+        formatted = filter_and_format_conversation(convo, sample_id=sample_id)
         if formatted:
             cleaned_sharegpt.append(formatted)
         if len(cleaned_sharegpt) >= sharegpt_limit:
             break
 
     cleaned_vietnamese = []
-    for item in raw_vietnamese:
+    for idx, item in enumerate(raw_vietnamese):
         convo = item.get("conversations") or item.get("messages") or []
-        formatted = filter_and_format_conversation(convo)
+        sample_id = str(item.get("id") or f"vi_invoice_{idx}")
+        formatted = filter_and_format_conversation(convo, sample_id=sample_id)
         if formatted:
             cleaned_vietnamese.append(formatted)
         if len(cleaned_vietnamese) >= vi_limit:
@@ -124,9 +143,10 @@ def build_hybrid_dataset(
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(hybrid, f, ensure_ascii=False, indent=2)
+        for sample in hybrid:
+            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
 
-    logger.info("Đã ghi thành công %d mẫu vào %s", len(hybrid), str(out_file))
+    logger.info("Đã ghi thành công %d mẫu vào file JSONL %s", len(hybrid), str(out_file))
 
     return {
         "total_samples": len(hybrid),
@@ -137,10 +157,10 @@ def build_hybrid_dataset(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Chuẩn bị tập dữ liệu lai cho huấn luyện EAGLE-3.1")
-    parser.add_argument("--sharegpt-path", type=str, default="data/raw/sharegpt.json", help="Đường dẫn file ShareGPT JSON")
-    parser.add_argument("--vi-path", type=str, default="data/raw/vietnamese_invoices.json", help="Đường dẫn file Tiếng Việt JSON")
-    parser.add_argument("--output-path", type=str, default="data/processed/hybrid_dataset.json", help="Đường dẫn file xuất")
+    parser = argparse.ArgumentParser(description="Chuẩn bị tập dữ liệu lai JSONL cho huấn luyện SpecForge EAGLE-3.1")
+    parser.add_argument("--sharegpt-path", type=str, default="data/raw/sharegpt.json", help="Đường dẫn file ShareGPT JSON/JSONL")
+    parser.add_argument("--vi-path", type=str, default="data/raw/vietnamese_invoices.json", help="Đường dẫn file Tiếng Việt JSON/JSONL")
+    parser.add_argument("--output-path", type=str, default="data/processed/hybrid_train.jsonl", help="Đường dẫn file JSONL xuất ra")
     parser.add_argument("--sharegpt-limit", type=int, default=20000, help="Số lượng mẫu ShareGPT tối đa")
     parser.add_argument("--vi-limit", type=int, default=10000, help="Số lượng mẫu Tiếng Việt tối đa")
     parser.add_argument("--seed", type=int, default=42, help="Seed xáo trộn dữ liệu")

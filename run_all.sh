@@ -90,7 +90,7 @@ python export/package_and_upload.py \
     --checkpoint-path "checkpoints/checkpoint_epoch_20.pt" \
     --config-path "configs/eagle3_qwen2.5_7b.json" \
     --output-dir "output/eagle3_qwen2.5_7b" \
-    --repo-id "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator" \
+    --repo-id "duckhoi/qwen2.5-7b-eagle3.1-speculator" \
     --precision "float16" \
     --upload
 

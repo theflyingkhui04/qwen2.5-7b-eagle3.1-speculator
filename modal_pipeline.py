@@ -279,7 +279,7 @@ def train_head(
     timeout=1800,
 )
 def export_and_upload(
-    repo_id: str = "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator",
+    repo_id: str = "duckhoi/qwen2.5-7b-eagle3.1-speculator",
     target_epoch: int = 20,
     test_mode: bool = False,
 ):
@@ -326,7 +326,7 @@ def export_and_upload(
 @app.local_entrypoint()
 def main(
     step: str = "test",
-    repo_id: str = "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator",
+    repo_id: str = "duckhoi/qwen2.5-7b-eagle3.1-speculator",
     epochs: int = 20,
     batch_size: int = 8,
     force: bool = False,

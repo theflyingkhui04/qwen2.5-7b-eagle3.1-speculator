@@ -6,43 +6,79 @@ from data.prepare_hybrid_dataset import (
     build_hybrid_dataset,
 )
 
-def test_filter_and_format_conversation():
+
+def test_filter_and_format_conversation_valid():
     raw_convo = [
         {"from": "human", "value": "Trích xuất thông tin hóa đơn sau: Cty ABC MST 0123456789"},
-        {"from": "gpt", "value": '{"company": "Cty ABC", "tax_code": "0123456789"}'}
+        {"from": "gpt", "value": '{"company": "Cty ABC", "tax_code": "0123456789"}'},
     ]
-    res = filter_and_format_conversation(raw_convo)
+    res = filter_and_format_conversation(raw_convo, sample_id="sample_0")
     assert res is not None
+    assert res["id"] == "sample_0"
     assert len(res["conversations"]) == 2
-    assert res["conversations"][0]["role"] == "user"
-    assert res["conversations"][1]["role"] == "assistant"
+    assert res["conversations"][0]["from"] == "human"
+    assert res["conversations"][0]["value"] == "Trích xuất thông tin hóa đơn sau: Cty ABC MST 0123456789"
+    assert res["conversations"][1]["from"] == "gpt"
+    assert res["conversations"][1]["value"] == '{"company": "Cty ABC", "tax_code": "0123456789"}'
+
+
+def test_filter_and_format_conversation_with_role_content_input():
+    raw_convo = [
+        {"role": "user", "content": "Xin chào"},
+        {"role": "assistant", "content": "Chào bạn, tôi có thể giúp gì cho bạn?"},
+    ]
+    res = filter_and_format_conversation(raw_convo, sample_id="sample_1")
+    assert res is not None
+    assert res["id"] == "sample_1"
+    assert len(res["conversations"]) == 2
+    assert res["conversations"][0]["from"] == "human"
+    assert res["conversations"][0]["value"] == "Xin chào"
+    assert res["conversations"][1]["from"] == "gpt"
+    assert res["conversations"][1]["value"] == "Chào bạn, tôi có thể giúp gì cho bạn?"
+
 
 def test_filter_empty_or_invalid_conversation():
     assert filter_and_format_conversation([]) is None
     assert filter_and_format_conversation([{"from": "human", "value": ""}]) is None
+    assert filter_and_format_conversation([{"from": "human", "value": "Chỉ có 1 lượt hỏi"}]) is None
+
 
 def test_sanitizes_unusual_line_terminators():
     raw_convo = [
         {"from": "human", "value": "Line 1\u2028Line 2"},
-        {"from": "gpt", "value": "Paragraph 1\u2029Paragraph 2"}
+        {"from": "gpt", "value": "Paragraph 1\u2029Paragraph 2"},
     ]
-    res = filter_and_format_conversation(raw_convo)
-    assert "\u2028" not in res["conversations"][0]["content"]
-    assert "\u2029" not in res["conversations"][1]["content"]
-    assert "Line 1\nLine 2" == res["conversations"][0]["content"]
-    assert "Paragraph 1\n\nParagraph 2" == res["conversations"][1]["content"]
+    res = filter_and_format_conversation(raw_convo, sample_id="sample_line_term")
+    assert res is not None
+    assert "\u2028" not in res["conversations"][0]["value"]
+    assert "\u2029" not in res["conversations"][1]["value"]
+    assert "Line 1\nLine 2" == res["conversations"][0]["value"]
+    assert "Paragraph 1\n\nParagraph 2" == res["conversations"][1]["value"]
 
-def test_build_hybrid_dataset(tmp_path):
+
+def test_build_hybrid_dataset_outputs_jsonl(tmp_path: Path):
     sharegpt_file = tmp_path / "sharegpt.json"
     vi_file = tmp_path / "vi_invoice.json"
-    out_file = tmp_path / "hybrid.json"
+    out_file = tmp_path / "hybrid_train.jsonl"
 
     dummy_sg = [
-        {"conversations": [{"from": "human", "value": f"Hi {i}"}, {"from": "gpt", "value": f"Hello {i}"}]}
+        {
+            "id": f"sg_{i}",
+            "conversations": [
+                {"from": "human", "value": f"Hi {i}"},
+                {"from": "gpt", "value": f"Hello {i}"},
+            ],
+        }
         for i in range(5)
     ]
     dummy_vi = [
-        {"conversations": [{"from": "human", "value": f"Hóa đơn {i}"}, {"from": "gpt", "value": f"Thông tin {i}"}]}
+        {
+            "id": f"vi_{i}",
+            "conversations": [
+                {"from": "human", "value": f"Hóa đơn {i}"},
+                {"from": "gpt", "value": f"Thông tin {i}"},
+            ],
+        }
         for i in range(5)
     ]
 
@@ -62,7 +98,16 @@ def test_build_hybrid_dataset(tmp_path):
     assert stats["vietnamese_count"] == 2
     assert out_file.exists()
 
-    with open(out_file, "r", encoding="utf-8") as f:
-        loaded = json.load(f)
-    assert len(loaded) == 5
-    assert all("conversations" in sample for sample in loaded)
+    # Xác thực định dạng JSONL (mỗi dòng là một JSON object hợp lệ)
+    lines = out_file.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 5
+
+    parsed_samples = [json.loads(line) for line in lines]
+    for sample in parsed_samples:
+        assert "id" in sample
+        assert "conversations" in sample
+        assert len(sample["conversations"]) >= 2
+        for turn in sample["conversations"]:
+            assert "from" in turn
+            assert "value" in turn
+            assert turn["from"] in ["human", "gpt"]

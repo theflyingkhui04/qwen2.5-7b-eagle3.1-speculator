@@ -3,7 +3,7 @@ Script package_and_upload.py
 Đóng gói trọng số đầu nháp EAGLE-3.1 sang định dạng model.safetensors và config.json
 chuẩn vLLM ("EagleQwen2ForCausalLM").
 Hỗ trợ xuất precision float16 tương thích 100% với kiến trúc Turing trên Tesla T4.
-Tự động đẩy lên Hugging Face Hub (theflyingkhui04/qwen2.5-7b-eagle3.1-speculator).
+Tự động đẩy lên Hugging Face Hub (duckhoi/qwen2.5-7b-eagle3.1-speculator).
 """
 
 import argparse
@@ -68,7 +68,7 @@ def parse_export_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint-path", type=str, default="checkpoints/checkpoint_epoch_20.pt", help="Đường dẫn file .pt")
     parser.add_argument("--config-path", type=str, default="configs/eagle3_qwen2.5_7b.json", help="Đường dẫn file cấu hình gốc")
     parser.add_argument("--output-dir", type=str, default="output/eagle3_qwen2.5_7b", help="Thư mục xuất thành phẩm")
-    parser.add_argument("--repo-id", type=str, default="theflyingkhui04/qwen2.5-7b-eagle3.1-speculator", help="Repo ID trên Hugging Face")
+    parser.add_argument("--repo-id", type=str, default="duckhoi/qwen2.5-7b-eagle3.1-speculator", help="Repo ID trên Hugging Face")
     parser.add_argument("--precision", type=str, default="float16", choices=["float16", "bfloat16"], help="Định dạng số thực (float16 tối ưu T4)")
     parser.add_argument("--upload", action="store_true", help="Bật cờ upload lên Hugging Face Hub")
     return parser.parse_args(args)

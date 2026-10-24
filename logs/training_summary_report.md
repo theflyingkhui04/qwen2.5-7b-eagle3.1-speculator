@@ -80,4 +80,4 @@ Chạy lệnh đóng gói định dạng chuẩn `vLLM` và tải lên Hugging F
 modal run modal_pipeline.py --step export
 ```
 Sau lệnh này, trọng số mô hình sẽ có mặt trực tiếp tại:
-`https://huggingface.co/theflyingkhui04/qwen2.5-7b-eagle3.1-speculator`
+`https://huggingface.co/duckhoi/qwen2.5-7b-eagle3.1-speculator`

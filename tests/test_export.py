@@ -34,6 +34,6 @@ def test_verify_package_integrity(tmp_path):
     assert verify_package_integrity(tmp_path) is True
 
 def test_parse_export_args():
-    args = parse_export_args(["--repo-id", "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator", "--precision", "float16"])
-    assert args.repo_id == "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator"
+    args = parse_export_args(["--repo-id", "duckhoi/qwen2.5-7b-eagle3.1-speculator", "--precision", "float16"])
+    assert args.repo_id == "duckhoi/qwen2.5-7b-eagle3.1-speculator"
     assert args.precision == "float16"
