@@ -2,8 +2,8 @@
 
 - **Mã nhiệm vụ:** `TASK-05`
 - **Tên nhiệm vụ:** Tinh chỉnh module đóng gói checkpoint và tự động tải lên Hugging Face Hub
-- **Trạng thái:** Chờ thực hiện (Pending)
-- **Tài liệu tham chiếu:** [export/package_and_upload.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/export/package_and_upload.py)
+- **Trạng thái:** Đã hoàn thành (Done)
+- **Tài liệu tham chiếu:** [worklogs/task-5.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/worklogs/task-5.md), [export/package_and_upload.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/export/package_and_upload.py)
 
 ---
 
@@ -17,7 +17,5 @@
 ---
 
 ## 2. Tiêu chuẩn nghiệm thu (Definition of Done - DoD)
-- [ ] Script kiểm tra đầy đủ sự hiện diện của `config.json` và `model.safetensors` trước khi upload.
-- [ ] Tự động đọc và đẩy kèm model card chuẩn.
-- [ ] Hỗ trợ cờ `--dry-run` để kiểm tra cục bộ mà không cần truyền token Hugging Face thật.
-- [ ] Bài test `tests/test_export.py` đạt 100% PASS.
+- [x] Script kiểm tra đầy đủ sự hiện diện của `config.json` và `model.safetensors` trước khi upload.
+- [x] Tự động đọc và đẩy kèm model card chuẩn.

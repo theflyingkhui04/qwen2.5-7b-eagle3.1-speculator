@@ -2,8 +2,8 @@
 
 - **Mã nhiệm vụ:** `TASK-06`
 - **Tên nhiệm vụ:** Tối ưu hóa pipeline điều phối 3 bước và hoàn thiện toàn diện bộ test
-- **Trạng thái:** Chờ thực hiện (Pending)
-- **Tài liệu tham chiếu:** [run_all.sh](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/run_all.sh), [modal_pipeline.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/modal_pipeline.py), [README.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/README.md)
+- **Trạng thái:** Đã hoàn thành (Done)
+- **Tài liệu tham chiếu:** [worklogs/task-6.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/worklogs/task-6.md), [modal_pipeline.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/modal_pipeline.py), [run_all.sh](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/run_all.sh), [README.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/README.md)
 
 ---
 
@@ -26,8 +26,8 @@
 ---
 
 ## 2. Tiêu chuẩn nghiệm thu (Definition of Done - DoD)
-- [ ] `run_all.sh` điều phối đúng 3 bước, bảo lưu Disk Guard và Cost Guard.
-- [ ] `modal_pipeline.py` loại bỏ trích xuất offline, cấu hình container SpecForge chuẩn.
-- [ ] `notebooks/train_on_vastai.ipynb` cập nhật luồng clone/pip install SpecForge và chạy pipeline mới.
-- [ ] `README.md` phản ánh trung thực quy trình 3 bước, tài liệu hóa bộ dữ liệu Train/Val/Test.
-- [ ] Toàn bộ bộ test `pytest tests/` chạy hoàn hảo 100% không có lỗi.
+- [x] `run_all.sh` điều phối đúng 3 bước, bảo lưu Disk Guard và Cost Guard.
+- [x] `modal_pipeline.py` loại bỏ trích xuất offline, cấu hình container SpecForge chuẩn.
+- [x] `notebooks/train_on_vastai.ipynb` cập nhật luồng clone/pip install SpecForge và chạy pipeline mới.
+- [x] `README.md` phản ánh trung thực quy trình 3 bước, tài liệu hóa bộ dữ liệu Train/Val/Test.
+- [x] Toàn bộ bộ test `pytest tests/` chạy hoàn hảo 100% không có lỗi (37/37 tests PASS).

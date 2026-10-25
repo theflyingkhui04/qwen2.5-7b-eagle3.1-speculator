@@ -2,6 +2,7 @@
 # ==============================================================================
 # Script: run_all.sh
 # Pipeline Tự Động Hóa 1-Click Huấn Luyện Đầu Nháp EAGLE-3.1 Cho Qwen2.5-7B
+# Sử dụng SpecForge (3 bước: Prepare Dataset -> SpecForge Train -> Package & Upload)
 # Tích hợp: Disk Guard (>=50GB), Cost Ceiling Guard (<=6.0h), Auto-Stop Vast.ai
 # ==============================================================================
 
@@ -11,9 +12,10 @@ set -euo pipefail
 CONTAINER_ID="${CONTAINER_ID:-${VAST_CONTAINERLABEL:-""}}"
 MAX_RUNTIME_HOURS=6.0
 MIN_DISK_FREE_GB=50
+NUM_GPUS="${NUM_GPUS:-1}"
 LOG_FILE="training_pipeline.log"
 
-echo "=== [EAGLE-3.1 Speculator Pipeline Bắt Đầu] ===" | tee -a "$LOG_FILE"
+echo "=== [EAGLE-3.1 SpecForge Pipeline Bắt Đầu] ===" | tee -a "$LOG_FILE"
 echo "Thời gian bắt đầu: $(date)" | tee -a "$LOG_FILE"
 echo "Container ID Vast.ai: ${CONTAINER_ID:-'(Chạy local/chưa cấu hình)'}" | tee -a "$LOG_FILE"
 
@@ -56,42 +58,28 @@ echo "✅ Dung lượng đĩa khả dụng: ${FREE_DISK_GB} GB (Đạt chuẩn a
 TIMER_PID=$!
 
 # ==============================================================================
-# 5. Thực thi tuần tự 4 bước kỹ thuật
+# 5. Thực thi tuần tự 3 bước kỹ thuật
 # ==============================================================================
 
-# Bước 1: Chuẩn bị dữ liệu lai
-echo ">>> [Bước 1/4] Chuẩn bị tập dữ liệu lai (ShareGPT 20k + Tiếng Việt 10k)..." | tee -a "$LOG_FILE"
+# Bước 1: Chuẩn bị dữ liệu lai (ShareGPT + Tiếng Việt + Hóa đơn -> train.jsonl, val.jsonl, test.jsonl)
+echo ">>> [Bước 1/3] Chuẩn bị dữ liệu lai phân chia 3 tập Train/Val/Test..." | tee -a "$LOG_FILE"
 python data/prepare_hybrid_dataset.py \
-    --sharegpt-path "data/raw/sharegpt.json" \
-    --vi-path "data/raw/vietnamese_invoices.json" \
-    --output-path "data/processed/hybrid_dataset.json" \
-    --sharegpt-limit 20000 \
-    --vi-limit 10000
+    --vi-path "data/raw/vi_alpaca_full.parquet" \
+    --invoice-path "data/raw/vietnamese_invoices.json" \
+    --english-path "data/raw/sharegpt.json" \
+    --output-dir "data/processed"
 
-# Bước 2: Trích xuất vector ẩn tầng 28
-echo ">>> [Bước 2/4] Trích xuất Hidden States tầng 28 từ Qwen2.5-7B..." | tee -a "$LOG_FILE"
-python extraction/extract_hidden_states.py \
-    --model-id "Qwen/Qwen2.5-7B-Instruct" \
-    --dataset-path "data/processed/hybrid_dataset.json" \
-    --output-dir "data/features" \
-    --target-layer 28 \
-    --chunk-size 5000 \
-    --min-disk-gb "$MIN_DISK_FREE_GB"
-
-# Bước 3: Huấn luyện mạng đầu nháp EAGLE-3.1
-echo ">>> [Bước 3/4] Huấn luyện đầu nháp EAGLE-3.1 (20 Epochs, Dual Loss, FC Norm)..." | tee -a "$LOG_FILE"
+# Bước 2: Huấn luyện với SpecForge (Ghép hidden trực tiếp VRAM & unroll TTT đa bước)
+echo ">>> [Bước 2/3] Huấn luyện đầu nháp EAGLE-3.1 qua SpecForge Launcher..." | tee -a "$LOG_FILE"
 python training/train.py \
     --config "configs/train_config.yaml" \
-    --resume
+    --gpus "$NUM_GPUS"
 
-# Bước 4: Đóng gói checkpoint chuẩn Hugging Face & Upload
-echo ">>> [Bước 4/4] Đóng gói chuẩn vLLM float16 và upload lên Hugging Face Hub..." | tee -a "$LOG_FILE"
+# Bước 3: Đóng gói và upload lên Hugging Face Hub
+echo ">>> [Bước 3/3] Đóng gói và upload lên Hugging Face Hub..." | tee -a "$LOG_FILE"
 python export/package_and_upload.py \
-    --checkpoint-path "checkpoints/checkpoint_epoch_20.pt" \
-    --config-path "configs/eagle3_qwen2.5_7b.json" \
-    --output-dir "output/eagle3_qwen2.5_7b" \
-    --repo-id "duckhoi/qwen2.5-7b-eagle3.1-speculator" \
-    --precision "float16" \
+    --output-dir "checkpoints/qwen2.5-7b-eagle3.1" \
+    --repo-id "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator" \
     --upload
 
 # Hủy bộ đếm giờ nếu hoàn thành trước hạn

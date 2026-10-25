@@ -42,17 +42,18 @@ Trained on an **NVIDIA A100-SXM4-80GB** GPU via Modal.com serverless infrastruct
 
 ## 2. Training Details
 
-* **Dataset:** `hybrid_dataset.json` (30,000 multi-turn instruction, coding, mathematical reasoning, and bilingual English-Vietnamese samples).
-* **Hardware:** NVIDIA A100-SXM4-80GB (Modal Cloud Serverless).
-* **Training Epochs:** 20 full epochs (69,740 optimization steps).
+* **Framework:** `sgl-project/SpecForge` (Autoregressive multi-step unrolling with FlashAttention directly in VRAM).
+* **Dataset:** `train.jsonl` (40,000 multi-turn instruction, Vietnamese general conversational, structured JSON invoice MC-OCR, and English CoT reasoning samples).
+* **Hardware:** NVIDIA A100-SXM4-80GB (Modal Cloud Serverless / Vast.ai).
+* **Training Epochs:** 3 full epochs (~15,000 optimization steps with effective batch size 8).
+* **Unroll Depth (TTT):** `ttt_length = 5` tokens per draft rollout step.
 * **Dual Loss Objective:**
   ```text
   Total_Loss = 1.0 * Loss_CrossEntropy + 0.5 * Loss_SmoothL1
   ```
   * `Loss_CrossEntropy`: Optimizes discrete next-token classification accuracy.
   * `Loss_SmoothL1`: Aligns the speculator's continuous latent space with Layer 28 of the base model, preventing semantic drift during multi-step tree drafting.
-* **Optimizer:** AdamW (`lr = 3e-4`, `weight_decay = 0.01`, `betas = (0.9, 0.95)`).
-* **LR Scheduler:** Cosine Annealing with Warm Restarts (`eta_min = 1e-5`).
+* **Optimizer:** AdamW (`lr = 1e-4`, Cosine Annealing decay).
 
 ---
 

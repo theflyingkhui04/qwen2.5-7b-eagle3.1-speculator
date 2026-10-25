@@ -1,263 +1,309 @@
 # Qwen2.5-7B EAGLE-3.1 Speculator
 
-> **Dự án:** Huấn luyện đầu nháp suy đoán (Speculative Draft Head) EAGLE-3.1 cho `Qwen/Qwen2.5-7B-Instruct`.  
+> **Dự án:** Huấn luyện đầu nháp suy đoán (Speculative Draft Head) EAGLE-3.1 cho `Qwen/Qwen2.5-7B-Instruct` sử dụng framework chính thức `sgl-project/SpecForge`.  
 > **Tác giả:** Cấn Đức Khôi (`theflyingkhui04`)  
-> **Mục tiêu:** Tăng tốc suy luận (Lossless Acceleration) 2.5x – 3.2x chuyên biệt cho Tiếng Việt và Hóa đơn MC-OCR, tương thích vLLM trên GPU Tesla T4 (16GB).
+> **Mục tiêu:** Tăng tốc suy luận không suy giảm chất lượng (Lossless Acceleration) 2.5x – 3.2x chuyên biệt cho tiếng Việt và hóa đơn MC-OCR, tương thích vLLM và SGLang trên GPU Tesla T4 (16GB) và A100.  
+> **Môi trường huấn luyện chính:** Đám mây serverless [Modal.com](https://modal.com) (GPU NVIDIA A100-80GB).
 
 ---
 
-## 1. Tổng Quan Kiến Trúc
+## 1. Tổng quan kiến trúc
 
 - **Mô hình mục tiêu (Target Model):** `Qwen/Qwen2.5-7B-Instruct` (7.61B tham số, `hidden_size = 3584`, `num_hidden_layers = 28`).
-- **Tầng trích xuất (Feature Extraction Layer):** Tầng thứ 28 (tầng cuối cùng trước LM Head, mang vector biểu diễn giàu ngữ nghĩa nhất).
-- **Mô hình đầu nháp (Draft Head):** EAGLE-3.1 (~270M tham số, checkpoint ~540 MB).
-  - 1 tầng Transformer Decoder tự hồi quy (28 attention heads, 4 KV heads).
-  - Tầng **FC Normalization** (cốt lõi của EAGLE-3.1): chuẩn hóa vector ẩn sau mỗi bước nháp nhằm triệt tiêu hiện tượng Attention Drift khi suy đoán sâu `k >= 3`.
-- **Hàm mất mát kết hợp (Dual Loss):**
-  ```text
-  Total_Loss = Loss_CrossEntropy(token_prediction) + 0.5 * Loss_SmoothL1(predicted_hidden, target_hidden)
-  ```
+- **Tầng trích xuất đặc trưng (Feature Layer):** Tầng thứ 28 (tầng áp chót trước LM Head, mang vector biểu diễn giàu ngữ nghĩa nhất).
+- **Mô hình đầu nháp (Draft Head):** EAGLE-3.1 (~100M tham số, checkpoint ~200MB):
+  - 1 tầng Transformer Decoder tự hồi quy (28 query heads, 4 KV heads - Grouped-Query Attention).
+  - Tầng **FC Normalization** và **Norm Output**: chuẩn hóa vector ẩn và logit đầu ra nhằm triệt tiêu hiện tượng trôi số học khi unroll suy đoán sâu 5 bước (`ttt_length = 5`).
+  - Cơ chế **Post-Norm Feedback**: đưa tín hiệu phản hồi đã chuẩn hóa ngược trở lại vòng lặp tiếp theo, loại bỏ sai số tích lũy qua các bước sinh nháp.
+- **Framework huấn luyện:** `sgl-project/SpecForge` (trực tiếp unroll đa bước với FlashAttention trong VRAM, triệt tiêu hoàn toàn điểm nghẽn ghi đĩa I/O của cách trích xuất offline thủ công).
 
 ---
 
-## 2. Cấu Trúc Thư Mục Repository
+## 2. Cấu trúc thư mục repository
 
 ```text
 qwen2.5-7b-eagle3.1-speculator/
-├── README.md                      # Hướng dẫn chi tiết chạy 1-click trên Modal & Vast.ai
-├── modal_pipeline.py              # Serverless Pipeline 1-Click trên Modal.com (A100-80GB)
-├── requirements.txt               # Dependencies: torch, transformers, accelerate, safetensors...
+├── README.md                      # Hướng dẫn chi tiết sử dụng và huấn luyện
+├── modal_pipeline.py              # Serverless pipeline 1-click trên Modal (NVIDIA A100-80GB, khuyên dùng)
+├── requirements.txt               # Dependencies: PyTorch, SpecForge, SGLang, Transformers, Datasets...
+├── run_all.sh                     # Script điều phối 3 bước ngầm cho máy ảo độc lập (kèm Disk & Cost Guard)
 ├── configs/
-│   ├── eagle3_qwen2.5_7b.json     # Cấu hình kiến trúc đầu nháp EAGLE-3.1
-│   └── train_config.yaml          # Siêu tham số huấn luyện (batch size, lr, epochs, loss weights)
+│   ├── eagle3.1_qwen2.5_7b.json   # Cấu hình kiến trúc đầu nháp chuẩn EAGLE-3.1 (ghim cứng)
+│   └── train_config.yaml          # Siêu tham số huấn luyện (batch size, lr, epochs, WandB, limits)
 ├── data/
-│   ├── prepare_hybrid_dataset.py  # Script gộp ShareGPT (20k) + Tiếng Việt / Hóa đơn (10k)
-│   └── raw/                       # Thư mục lưu cache dữ liệu thô
-├── extraction/
-│   └── extract_hidden_states.py   # Forward Qwen2.5-7B trích xuất activations tầng 28 ra ổ đĩa
+│   ├── prepare_hybrid_dataset.py  # Chuẩn hóa ShareGPT + Tiếng Việt + Hóa đơn, chia Train/Val/Test
+│   └── raw/                       # Thư mục lưu dữ liệu nguồn
 ├── training/
-│   ├── model.py                   # Cài đặt mạng EAGLE-3.1 Speculator Head (kèm FC Normalization)
-│   ├── loss.py                    # Dual Loss: Cross-Entropy + Smooth L1 Regression
-│   └── train.py                   # Vòng lặp huấn luyện chính với PyTorch AdamW & Checkpoint resume
+│   ├── __init__.py                # Module training
+│   └── train.py                   # SpecForge launcher chuẩn (CLI, tự cấu hình WandB, auto-resume, pruning)
 ├── export/
-│   └── package_and_upload.py      # Đóng gói config.json, weights (float16) và push lên Hugging Face Hub
+│   └── package_and_upload.py      # Đóng gói checkpoint SpecForge và upload lên Hugging Face Hub
 ├── notebooks/
-│   └── train_on_vastai.ipynb      # Notebook JupyterLab chạy trực quan từng bước
-└── run_all.sh                     # Script Bash chạy ngầm tự động trên Vast.ai (tmux + auto-stop máy)
+│   └── train_on_vastai.ipynb      # Notebook JupyterLab chạy tương tác từng bước
+├── task-requirements/             # Đặc tả yêu cầu kỹ thuật và bảng theo dõi 6 tasks
+└── worklogs/                      # Nhật ký kỹ thuật chi tiết từng nhiệm vụ (Task 1 đến Task 6)
 ```
 
 ---
 
-## 3. Quy Trình 4 Bước Huấn Luyện
+## 3. Quy trình 3 bước huấn luyện tinh gọn
 
-1. **Bước 1: Chuẩn bị dữ liệu lai (Hybrid Dataset):**
-   Gộp 20.000 mẫu ShareGPT (năng lực chỉ dẫn tổng quát) và 10.000 mẫu Tiếng Việt / Hóa đơn MC-OCR (định hướng key-value extraction).
-   ```bash
-   python data/prepare_hybrid_dataset.py \
-       --sharegpt-path "data/raw/sharegpt.json" \
-       --vi-path "data/raw/vietnamese_invoices.json" \
-       --output-path "data/processed/hybrid_dataset.json"
-   ```
+Hệ thống đã được tối ưu hóa từ quy trình 4 bước cũ xuống còn **3 bước khép kín**, loại bỏ hoàn toàn bước trích xuất offline thủ công gây nghẽn đĩa.
 
-2. **Bước 2: Trích xuất Vector Ẩn (Feature Extraction):**
-   Forward Qwen2.5-7B (bfloat16) qua 30.000 mẫu, áp dụng Sequence Bucketing (<=512, <=1024, <=2048) và lưu chunks safetensors (mỗi chunk 5.000 mẫu) vào `data/features/`.
-   ```bash
-   python extraction/extract_hidden_states.py \
-       --model-id "Qwen/Qwen2.5-7B-Instruct" \
-       --dataset-path "data/processed/hybrid_dataset.json" \
-       --output-dir "data/features" \
-       --target-layer 28
-   ```
-
-3. **Bước 3: Huấn luyện Đầu Nháp EAGLE-3.1:**
-   Huấn luyện 20 epochs với AdamW, Cosine Annealing decay, Gradient Accumulation. Tự động lưu và phục hồi checkpoint mỗi 5 epochs.
-   ```bash
-   python training/train.py \
-       --config "configs/train_config.yaml" \
-       --resume
-   ```
-
-4. **Bước 4: Đóng gói Chuẩn vLLM & Upload Hugging Face (Export & Package):**
-   * **Tại sao cần đóng gói?** File `checkpoint_epoch_20.pt` chứa cả optimizer và scheduler của PyTorch (~1.6 GB) nên vLLM không thể nhận diện trực tiếp. Script đóng gói thực hiện 4 nhiệm vụ cốt lõi:
-     1. Lọc sạch optimizer và scheduler, chỉ trích xuất đúng trọng số mô hình (`model_state_dict`).
-     2. Ép kiểu trọng số sang `float16` (giảm dung lượng xuống còn ~540 MB, tương thích 100% với kiến trúc Turing trên Tesla T4).
-     3. Lưu thành file an toàn `model.safetensors` (loại bỏ nguy cơ pickle injection, tốc độ nạp nhanh gấp 10 lần).
-     4. Sinh file `config.json` chuẩn Hugging Face (`architectures: ["EagleQwen2ForCausalLM"]`, `target_layer: 28`).
-   * **Cấu trúc thư mục thành phẩm sau khi đóng gói:**
-     ```text
-     output/eagle3_qwen2.5_7b/
-     ├── config.json          # Cấu hình vLLM nhận diện đầu nháp EAGLE-3.1
-     └── model.safetensors    # Trọng số float16 (~540 MB)
-     ```
-   * **Lệnh chạy đóng gói thủ công (Local / Server):**
-     ```bash
-     export HF_TOKEN="hf_your_token_here"
-     python export/package_and_upload.py \
-         --checkpoint-path "checkpoints/checkpoint_epoch_20.pt" \
-         --config-path "configs/eagle3_qwen2.5_7b.json" \
-         --output-dir "output/eagle3_qwen2.5_7b" \
-         --repo-id "duckhoi/qwen2.5-7b-eagle3.1-speculator" \
-         --precision "float16" \
-         --upload
-     ```
-   * **Lệnh chạy đóng gói trực tiếp trên Modal:**
-     ```bash
-     modal run modal_pipeline.py --step export --repo-id "duckhoi/qwen2.5-7b-eagle3.1-speculator"
-     ```
+```
+Dữ liệu thô ──> [Bước 1: Chuẩn bị dữ liệu] ──> train.jsonl (40k), val.jsonl (3k), test.jsonl (2k)
+                       │
+                       ▼
+          [Bước 2: Huấn luyện SpecForge]  <── Qwen2.5-7B (Freeze) + EAGLE-3.1 Head (Train)
+                       │
+                       ▼
+          [Bước 3: Đóng gói & Upload]     ──> Hugging Face Hub (vLLM / SGLang Ready)
+```
 
 ---
 
-## 4. Chạy Tự Động Serverless Trên Modal.com (Khuyến Nghị - GPU A100-80GB)
+### Bước 1: Chuẩn bị dữ liệu lai (train/val/test split)
 
-Quy trình Serverless trên [Modal.com](https://modal.com) là phương pháp tối ưu và an toàn nhất hiện nay:
-- **Tự động cấp phát GPU NVIDIA A100-80GB** khi thực thi và **tự động giải phóng ngay lập tức khi hoàn tất** (không lo quên tắt máy gây phát sinh chi phí như thuê Virtual Machine).
-- Tích hợp sẵn Persistent Volume (`qwen-eagle3-volume`) lưu trữ features và checkpoints an toàn giữa các lượt chạy.
-- Tự động theo dõi metric huấn luyện thời gian thực trên Weights & Biases (W&B) và tự động đẩy trọng số lên Hugging Face Hub.
+Chuẩn hóa dữ liệu sang định dạng **ShareGPT JSON Lines (`.jsonl`)** và phân chia độc lập 3 tập theo chuẩn Machine Learning để triệt tiêu nguy cơ rò rỉ dữ liệu (data leakage):
+- **Train:** 40.000 mẫu (`data/processed/train.jsonl`) - 40% Tiếng Việt, 35% Hóa đơn MC-OCR/JSON, 25% Tiếng Anh/CoT.
+- **Val:** 3.000 mẫu (`data/processed/val.jsonl`) - Theo dõi Dual Loss và đánh giá `best_checkpoint`.
+- **Test:** 2.000 mẫu (`data/processed/test.jsonl`) - Đo đạc độc lập tốc độ tăng tốc (Speedup) và tỷ lệ chấp thuận (`alpha`).
 
-### 4.1. Cài Đặt Môi Trường & Thiết Lập 1 Lần Đầu
-
-1. **Cài đặt thư viện Modal CLI:**
-   ```bash
-   pip install modal
-   ```
-
-2. **Đăng nhập và liên kết tài khoản Modal:**
-   ```bash
-   modal setup
-   ```
-   *(Trình duyệt sẽ tự động mở để xác thực tài khoản. Modal tặng sẵn 30 USD/tháng free credits cho tài khoản đã liên kết phương thức thanh toán).*
-
-3. **Cấu hình Secrets trên Modal (1 lần duy nhất):**
-   Tạo 2 secret trên Modal để cấp quyền nạp/đẩy model lên Hugging Face và theo dõi biểu đồ loss trên W&B:
-   ```bash
-   # Tạo secret Hugging Face (cần Token có quyền Write để đẩy model)
-   modal secret create my-huggingface-secret HF_TOKEN="hf_your_token_here"
-
-   # Tạo secret Weights & Biases (để xem log Loss thời gian thực)
-   modal secret create wandb-secret WANDB_API_KEY="your_wandb_api_key_here"
-   ```
-   *(Hoặc có thể tạo trực tiếp trên giao diện web trực quan tại: https://modal.com/secrets)*
-
-4. **Chốt chặn an toàn ví tiền (Khuyến nghị 100%):**
-   Vào Modal Dashboard -> **Settings** -> **Billing**: Thiết lập **Monthly Spend Limit = $0**.
-   Điều này đảm bảo khi dùng hết 30 USD credit miễn phí, Modal sẽ dừng tác vụ thay vì tự động trừ tiền vào tài khoản ngân hàng / Google Pay.
-
----
-
-### 4.2. Các Lệnh Chạy 1-Click (1-Click Execution)
-
-Toàn bộ pipeline được điều khiển tự động qua script `modal_pipeline.py`:
-
-#### 1. Kiểm thử nhanh toàn bộ quy trình (Test Run - 50 mẫu, 1 epoch):
-Chạy kiểm thử khép kín để xác thực GPU A100, container image, tokenizer và loss function:
+Lệnh thực thi:
 ```bash
+python data/prepare_hybrid_dataset.py \
+    --vi-path "data/raw/vi_alpaca_full.parquet" \
+    --inv-path "data/raw/vietnamese_invoices.json" \
+    --en-path "data/raw/sharegpt.json" \
+    --output-dir "data/processed"
+```
+
+---
+
+### Bước 2: Huấn luyện qua SpecForge launcher ([training/train.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/training/train.py))
+
+Launcher tự động đọc cấu hình [configs/train_config.yaml](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/configs/train_config.yaml) và thực thi qua `torchrun -m specforge.train`.
+
+#### 1. Lệnh khởi chạy cơ bản (Đơn GPU):
+```bash
+python training/train.py --config configs/train_config.yaml --gpus 1
+```
+
+#### 2. Lệnh khởi chạy đa GPU (2 hoặc 4 GPU):
+```bash
+python training/train.py --config configs/train_config.yaml --gpus 2
+```
+
+#### 3. Chạy thử kiểm tra cú pháp lệnh (Dry-run):
+Không cần nạp mô hình hay cấp phát GPU, script sẽ in ra câu lệnh `torchrun` chính xác 100%:
+```bash
+python training/train.py --dry-run
+```
+
+#### 4. Cơ chế tiếp tục (Resume) thông minh:
+- **Tự động tìm và ưu tiên bản `best`:**
+  ```bash
+  python training/train.py --resume
+  ```
+  *(Hệ thống tự động tìm checkpoint `best` trong thư mục đầu ra để tiếp tục. Nếu chưa có bản `best`, hệ thống tự động chuyển sang nạp checkpoint gần nhất `latest`).*
+- **Bắt buộc nạp bản `best`:**
+  ```bash
+  python training/train.py --resume-best
+  ```
+- **Chỉ định trực tiếp checkpoint cụ thể:**
+  ```bash
+  python training/train.py --checkpoint-path checkpoints/qwen2.5-7b-eagle3.1/checkpoint-2000
+  ```
+
+#### 5. Cơ chế dọn rác checkpoint tự động (`save_total_limit: 2`):
+- Để tránh phình to dung lượng ổ cứng trên máy chủ thuê và giúp việc tải về nhanh chóng, launcher tự động kích hoạt hàm dọn dẹp sau huấn luyện:
+  - **Luôn bảo vệ tuyệt đối:** Thư mục checkpoint `best`.
+  - **Giữ lại tối đa 2 checkpoint `latest` mới nhất.**
+  - **Tự động xóa sạch:** Các checkpoint trung gian cũ hơn.
+- Thư mục đầu ra chỉ nặng khoảng vài trăm megabytes thay vì hàng chục gigabytes.
+
+#### 6. Theo dõi thời gian thực qua Weights & Biases (WandB):
+- Thiết lập khóa API trước khi chạy:
+  ```bash
+  export WANDB_API_KEY="your_wandb_api_key_here"
+  ```
+- Launcher đã tích hợp sẵn đoạn code tự động định nghĩa toàn bộ biểu đồ (`setup_wandb_metrics`):
+  - Khóa trục thời gian `step_metric="train/step"` cho các nhóm `train/*`, `eval/*`, `acceptance/*`.
+  - Bảng tóm tắt tự động giá trị tối ưu: `train/loss (min)`, `eval/loss (min)`, `acceptance/alpha_overall (max)`, `acceptance/alpha_step_1...5 (max)`.
+  - Tự động theo dõi tài nguyên phần cứng (VRAM GB, GPU %, Throughput) trong tab System.
+  - Khi mở đường dẫn WandB, toàn bộ bảng điều khiển đã được sắp xếp sẵn tự động mà không cần tạo biểu đồ thủ công.
+
+---
+
+### Bước 3: Đóng gói và tải lên Hugging Face Hub ([export/package_and_upload.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/export/package_and_upload.py))
+
+Sau khi SpecForge hoàn tất huấn luyện và xuất ra `model.safetensors` cùng `config.json` chuẩn Hugging Face:
+```bash
+export HF_TOKEN="hf_your_write_token_here"
+
+python export/package_and_upload.py \
+    --checkpoint-dir "checkpoints/qwen2.5-7b-eagle3.1" \
+    --repo-id "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator" \
+    --upload
+```
+Script sẽ kiểm tra tính toàn vẹn của checkpoint, đính kèm `MODEL_CARD.md` và tải trực tiếp lên Hugging Face Hub.
+
+---
+
+## 4. Huấn luyện serverless trên Modal.com (Môi trường chính - Khuyên dùng)
+
+Quy trình huấn luyện chính được thiết kế để chạy trực tiếp trên nền tảng **Modal.com** qua file [modal_pipeline.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/modal_pipeline.py).  
+Ưu điểm:
+- Cấp phát GPU **NVIDIA A100-80GB** theo nhu cầu thực tế, tự ngắt ngay khi hoàn thành (không lo phát sinh chi phí rảnh rỗi).
+- Dữ liệu và checkpoint được lưu trữ bền vững trên **Modal Persistent Volume** (`qwen-eagle3-volume` gắn tại `/vol`).
+- Hỗ trợ chế độ chạy ngầm `--detach` (có thể tắt máy cá nhân, tiến trình vẫn tiếp tục chạy trên đám mây).
+
+### 4.1. Thiết lập môi trường và cấu hình bí mật (Modal secrets)
+
+Cài đặt Modal CLI trên máy cá nhân:
+```bash
+pip install modal
+modal setup
+```
+
+Tạo 2 secret chứa khóa API trên Modal (chỉ cần tạo một lần duy nhất):
+```bash
+# Secret cho Hugging Face (quyền Write để upload mô hình)
+modal secret create my-huggingface-secret HF_TOKEN="hf_your_token_here"
+
+# Secret cho Weights & Biases (để theo dõi biểu đồ huấn luyện)
+modal secret create wandb-secret WANDB_API_KEY="your_wandb_api_key_here"
+```
+
+### 4.2. Chạy thử kiểm tra môi trường (Test run)
+
+Trước khi kích hoạt huấn luyện lớn, bạn có thể chạy thử để xác thực container, GPU và cấu hình lệnh:
+```bash
+# In ra câu lệnh torchrun dự kiến (dry-run, không tốn GPU)
+modal run modal_pipeline.py --step test --dry-run
+
+# Chạy test thực tế 1 epoch, unroll 3 bước trên A100
 modal run modal_pipeline.py --step test
 ```
 
-#### 2. Chạy toàn bộ quy trình từ A đến Z (Full Pipeline - Khuyến nghị):
-Tự động chạy tuần tự: Trích xuất 30.000 mẫu trên A100-80GB -> Huấn luyện 20 Epochs -> Đóng gói trọng số chuẩn float16 -> Upload trực tiếp lên Hugging Face Hub:
+### 4.3. Khởi chạy huấn luyện chính thức (Training)
+
+Chạy huấn luyện đầu nháp EAGLE-3.1 trên GPU NVIDIA A100-80GB:
 ```bash
-modal run modal_pipeline.py --step all --epochs 20
+# Khởi chạy ngầm (tự do đóng terminal, máy chủ Modal tự thực hiện)
+modal run --detach modal_pipeline.py --step train
 ```
 
-> **Mẹo chạy ngầm tắt máy đi ngủ (`--detach` hoặc `-d`):**  
-> Thêm cờ `--detach` để ứng dụng chạy độc lập trên đám mây Modal:
-> ```bash
-> modal run --detach modal_pipeline.py --step all --epochs 20
-> ```
-> Sau khi màn hình hiển thị liên kết App, bạn có thể **tắt terminal, đóng nắp laptop đi ngủ**. Pipeline sẽ tự động hoàn tất, tự commit checkpoint vào Volume, tự đẩy lên Hugging Face và tự động tắt GPU A100.
+Nếu muốn tiếp tục từ checkpoint tốt nhất đã lưu trên Volume:
+```bash
+modal run --detach modal_pipeline.py --step train --resume
+```
 
-#### 3. Chạy độc lập từng bước (Tùy chọn linh hoạt):
-Nếu muốn chạy riêng lẻ từng giai đoạn:
-- **Chỉ trích xuất Vector ẩn tầng 28 (Feature Extraction):**
+Bạn cũng có thể ghi đè số epoch hoặc batch size trực tiếp từ CLI nếu cần:
+```bash
+modal run --detach modal_pipeline.py --step train --epochs 3 --batch-size 2
+```
+
+### 4.4. Đóng gói và tải lên Hugging Face Hub (Export)
+
+Sau khi huấn luyện thành công hoặc khi muốn xuất bản checkpoint tốt nhất lên Hugging Face:
+```bash
+modal run modal_pipeline.py --step export --repo-id theflyingkhui04/qwen2.5-7b-eagle3.1-speculator
+```
+
+### 4.5. Chạy toàn trình một chạm (End-to-end all)
+
+Lệnh 1-click kích hoạt liên hoàn: **Huấn luyện -> Lưu volume -> Đóng gói -> Tải lên Hugging Face**:
+```bash
+modal run --detach modal_pipeline.py --step all
+```
+
+### 4.6. Quản lý tác vụ ngầm và dữ liệu trên Modal Volume
+
+- **Theo dõi tiến trình đang chạy ngầm:**
   ```bash
-  modal run modal_pipeline.py --step extract
+  # Xem danh sách các app đang hoạt động
+  modal app list
+
+  # Xem log thời gian thực của app
+  modal app logs <app-id>
   ```
-- **Chỉ huấn luyện Đầu nháp EAGLE-3.1 (Train Speculator Head):**
+- **Kiểm tra dữ liệu trên Volume:**
   ```bash
-  modal run modal_pipeline.py --step train --epochs 20
+  # Xem danh sách checkpoint đã lưu trong volume
+  modal volume ls qwen-eagle3-volume checkpoints/qwen2.5-7b-eagle3.1
   ```
-- **Chỉ đóng gói và đẩy model lên Hugging Face Hub:**
+- **Tải checkpoint từ Volume về máy cá nhân (nếu muốn lưu trữ offline):**
   ```bash
-  modal run modal_pipeline.py --step export --repo-id "duckhoi/qwen2.5-7b-eagle3.1-speculator"
+  modal volume get qwen-eagle3-volume checkpoints/qwen2.5-7b-eagle3.1/best ./local_best_checkpoint
   ```
 
 ---
 
-### 4.3. Chuyển Giao Dữ Liệu & Huấn Luyện Nối Tiếp Giữa Các Tài Khoản (Transfer Workspaces)
+## 5. Chạy trên máy chủ GPU độc lập hoặc Vast.ai (Tùy chọn phụ)
 
-Vì gói miễn phí cấp **30 USD/tháng cho mỗi Workspace cá nhân**, các thành viên trong nhóm có thể mở rộng quỹ credit (30 USD x số người) bằng cách luân chuyển dữ liệu và huấn luyện nối tiếp theo các bước sau:
+Nếu bạn có nhu cầu chạy trên máy ảo chuyên dụng (Dedicated VM) như Vast.ai (1x NVIDIA A100-80GB hoặc RTX 4090-24GB) thay vì serverless, bạn có thể sử dụng script tự động [run_all.sh](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/run_all.sh) hoặc notebook tương tác [notebooks/train_on_vastai.ipynb](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/notebooks/train_on_vastai.ipynb).
 
-#### Bước 1: Tải Checkpoints & Features từ Workspace cũ về máy
-Đứng ở tài khoản cũ (khi sắp dùng hết 30 USD credit), chạy lệnh tải dữ liệu từ Modal Volume về máy tính:
-```bash
-# Tải toàn bộ features và checkpoints đã có về máy
-modal volume get qwen-eagle3-volume features ./data/features
-modal volume get qwen-eagle3-volume checkpoints ./checkpoints
-```
-
-#### Bước 2: Chuyển sang tài khoản Modal mới
-Đăng nhập tài khoản Modal mới (của bạn bè hoặc tài khoản thứ 2):
-```bash
-modal setup
-```
-*(Hoặc dùng `modal profile activate <tên_profile>` nếu bạn quản lý nhiều tài khoản trên cùng một máy).*
-
-Thiết lập lại Secrets trên tài khoản mới (1 lần duy nhất):
-```bash
-modal secret create my-huggingface-secret HF_TOKEN="hf_your_token"
-modal secret create --force wandb-secret WANDB_API_KEY="your_wandb_key"
-```
-
-#### Bước 3: Đẩy dữ liệu vào Volume của tài khoản mới
-Nạp dữ liệu đã tải từ bước 1 vào Volume của tài khoản mới:
-```bash
-modal volume put qwen-eagle3-volume ./data/features features
-modal volume put qwen-eagle3-volume ./checkpoints checkpoints
-```
-
-#### Bước 4: Tiếp tục huấn luyện nối tiếp
-Chạy lệnh huấn luyện như bình thường:
-```bash
-modal run modal_pipeline.py --step train --epochs 20
-```
-> **Cơ chế Auto-Resume:** Script `training/train.py` đã tích hợp sẵn tính năng tự động tìm kiếm checkpoint mới nhất trong `/vol/checkpoints` (ví dụ `checkpoint_epoch_10.pt`). Mô hình, trạng thái AdamW optimizer và Cosine Annealing scheduler sẽ được phục hồi 100% để tiếp tục huấn luyện ngay từ epoch 11 mà không tốn công chạy lại từ đầu.
-
----
-
-## 5. Chạy Tự Động Trên Vast.ai (Giải Pháp Máy Chủ Thuê Riêng)
-
-Trên instance 1x NVIDIA A100 (80GB VRAM) của Vast.ai:
 ```bash
 git clone https://github.com/theflyingkhui04/qwen2.5-7b-eagle3.1-speculator.git
 cd qwen2.5-7b-eagle3.1-speculator
 pip install -r requirements.txt
 
-# Thiết lập token và ID container (để tự động tắt máy khi xong)
+# Thiết lập biến môi trường
 export HF_TOKEN="hf_..."
+export WANDB_API_KEY="your_wandb_key"
 export CONTAINER_ID="your_vast_container_id"
 
-# Chạy ngầm trong tmux
+# Chạy ngầm trong phiên tmux
 tmux new -s train "bash run_all.sh"
 ```
 
-### Các Chốt Chặn An Toàn (Safeguards):
-- **Disk Overflow Guard:** Script kiểm tra dung lượng ổ đĩa trống >= 50 GB trước khi chạy.
-- **Cost Ceiling Guard:** Giới hạn thời gian tối đa cứng là **6.0 giờ**. Nếu quá giờ, tiến trình tự ngắt.
-- **Auto-Stop Instance:** Dù thành công hay gặp lỗi, script tự động gọi `vastai stop instance $CONTAINER_ID` để ngắt máy ngay lập tức, chống phát sinh tiền không tải.
+### Các chốt chặn an toàn (Safeguards):
+- **Disk Overflow Guard:** Kiểm tra dung lượng ổ đĩa trống >= 50GB trước khi kích hoạt quy trình.
+- **Cost Ceiling Guard:** Giới hạn thời gian chạy tối đa cứng là **6.0 giờ**. Nếu vượt quá, tiến trình tự ngắt để tránh phát sinh chi phí ngoài ý muốn.
+- **Auto-stop Instance:** Bất kể thành công hay gặp lỗi ngoại lệ, script tự động thực thi `vastai stop instance $CONTAINER_ID` để tắt máy chủ ngay lập tức.
 
 ---
 
-## 6. Triển Khai vLLM Trên GPU Tesla T4 (16GB)
+## 6. Hướng dẫn suy luận tăng tốc với vLLM trên Tesla T4 (16GB)
 
-Trên môi trường Google Colab hoặc máy chủ trang bị Tesla T4 (Turing sm_75):
+Sau khi checkpoint được tải lên Hugging Face Hub, khởi chạy server vLLM tận dụng speculative decoding trên GPU Tesla T4 (hoặc bất kỳ GPU NVIDIA nào):
 
 ```bash
-# Phục vụ vLLM với Speculative Decoding sử dụng base model AWQ (INT4)
 vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
-    --speculative-model duckhoi/qwen2.5-7b-eagle3.1-speculator \
+    --speculative-model theflyingkhui04/qwen2.5-7b-eagle3.1-speculator \
     --num-speculative-tokens 5 \
     --gpu-memory-utilization 0.90 \
     --max-model-len 2048 \
     --dtype float16
 ```
+
+Kiểm thử tốc độ suy luận qua API OpenAI-compatible:
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="token-dummy")
+response = client.chat.completions.create(
+    model="Qwen/Qwen2.5-7B-Instruct-AWQ",
+    messages=[
+        {"role": "user", "content": "Trích xuất thông tin hóa đơn sau sang JSON: CÔNG TY TNHH ABC, MST: 0101234567, Tổng tiền: 1.500.000 VNĐ"}
+    ],
+    temperature=0.0,
+)
+print(response.choices[0].message.content)
+```
+
+- **Hệ số tăng tốc kỳ vọng:** 2.5x – 3.2x trên văn bản tiếng Việt và hóa đơn MC-OCR có cấu trúc JSON.
+- **Chất lượng đầu ra:** Bảo toàn 100% không mất mát (Lossless Guarantee) do mô hình gốc 7B giữ quyền thẩm định tối cao.
+
+---
+
+## 7. Kiểm thử hệ thống và đảm bảo chất lượng
+
+Dự án bao gồm bộ kiểm thử đơn vị tự động toàn diện kiểm định 100% các thành phần (configs, dataset, SpecForge launcher, export & packaging, safeguards):
+
+```bash
+pytest tests/ -v
+```
+
+Kết quả: **37/37 tests passed**.

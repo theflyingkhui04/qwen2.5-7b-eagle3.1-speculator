@@ -30,9 +30,9 @@ task-requirements/
 | **Task 1** | Chuẩn hóa tầng dữ liệu sang ShareGPT JSONL, phân chia 40k Train / 3k Val / 2k Test | `DONE` | [task-1-dataset-pipeline.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-1-dataset-pipeline.md) |
 | **Task 2** | Dọn dẹp `extraction/`, `training/model.py`, `training/loss.py` và ghim chuẩn EAGLE-3.1 | `DONE` | [task-2-cleanup-and-eagle3.1-pinning.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-2-cleanup-and-eagle3.1-pinning.md) |
 | **Task 3** | Cập nhật `requirements.txt`, `configs/train_config.yaml`, `configs/eagle3.1_qwen2.5_7b.json` | `DONE` | [task-3-dependencies-and-configs.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-3-dependencies-and-configs.md) |
-| **Task 4** | Viết lại `training/train.py` thành SpecForge Launcher gọi `torchrun -m specforge.train` | `PENDING` | [task-4-specforge-launcher.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-4-specforge-launcher.md) |
-| **Task 5** | Tinh chỉnh `export/package_and_upload.py` để đóng gói checkpoint SpecForge | `PENDING` | [task-5-export-and-packaging.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-5-export-and-packaging.md) |
-| **Task 6** | Cập nhật `run_all.sh`, `modal_pipeline.py`, `notebooks/`, hoàn thiện `tests/` và `README.md` | `PENDING` | [task-6-orchestration-and-testing.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-6-orchestration-and-testing.md) |
+| **Task 4** | Viết lại `training/train.py` thành SpecForge Launcher gọi `torchrun -m specforge.train` | `DONE` | [task-4-specforge-launcher.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-4-specforge-launcher.md) |
+| **Task 5** | Tinh chỉnh `export/package_and_upload.py` để đóng gói checkpoint SpecForge | `DONE` | [task-5-export-and-packaging.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-5-export-and-packaging.md) |
+| **Task 6** | Cập nhật `run_all.sh`, `modal_pipeline.py`, `notebooks/`, hoàn thiện `tests/` và `README.md` | `DONE` | [task-6-orchestration-and-testing.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-6-orchestration-and-testing.md) |
 
 ---
 
@@ -60,19 +60,19 @@ task-requirements/
 - [x] Cập nhật và chạy `tests/test_configs.py` đạt 100% PASS.
 
 ### Task 4: Xây dựng SpecForge Launcher
-- [ ] Viết lại `training/train.py` thành CLI builder đọc YAML và gọi `torchrun -m specforge.train`.
-- [ ] Hỗ trợ đầy đủ các tham số: `--model-path`, `--draft-config`, `--data-path`, `--output-dir`, `--ttt-length`, v.v.
-- [ ] Viết `tests/test_train.py` kiểm thử mock `subprocess.run` xác thực lệnh sinh ra.
+- [x] Viết lại `training/train.py` thành CLI builder đọc YAML và gọi `torchrun -m specforge.train`.
+- [x] Hỗ trợ đầy đủ các tham số: `--model-path`, `--draft-config`, `--data-path`, `--output-dir`, `--ttt-length`, v.v.
+- [x] Viết `tests/test_train.py` kiểm thử mock `subprocess.run` xác thực lệnh sinh ra (5/5 tests PASS).
 
 ### Task 5: Tinh chỉnh quy trình đóng gói và upload checkpoint
-- [ ] Cập nhật `export/package_and_upload.py` để nạp trực tiếp checkpoint chuẩn từ thư mục output của SpecForge.
-- [ ] Tự động kiểm tra tính toàn vẹn của `config.json`, `model.safetensors` và sinh `MODEL_CARD.md`.
-- [ ] Hỗ trợ upload lên Hugging Face Hub qua `huggingface_hub.HfApi`.
-- [ ] Cập nhật `tests/test_export.py` đạt PASS.
+- [x] Cập nhật `export/package_and_upload.py` để nạp trực tiếp checkpoint chuẩn từ thư mục output của SpecForge.
+- [x] Tự động kiểm tra tính toàn vẹn của `config.json`, `model.safetensors` và sinh `MODEL_CARD.md`.
+- [x] Hỗ trợ upload lên Hugging Face Hub qua `huggingface_hub.HfApi`.
+- [x] Cập nhật `tests/test_export.py` đạt PASS (6/6 tests PASS).
 
 ### Task 6: Tối ưu pipeline điều phối và bộ test toàn diện
-- [ ] Rút gọn `run_all.sh` từ 4 bước xuống 3 bước, bảo lưu Disk Guard (>= 50GB) và Cost Ceiling Guard (<= 6.0h).
-- [ ] Cập nhật `modal_pipeline.py` (cài đặt SpecForge trên A100-80GB, bỏ hàm trích xuất offline, gắn volume).
-- [ ] Cập nhật `notebooks/train_on_vastai.ipynb` theo pipeline 3 bước mới.
-- [ ] Cập nhật `tests/test_final_structure.py` và chạy toàn bộ test suite.
-- [ ] Cập nhật `README.md` chuẩn hóa theo hướng dẫn 1-click SpecForge.
+- [x] Rút gọn `run_all.sh` từ 4 bước xuống 3 bước, bảo lưu Disk Guard (>= 50GB) và Cost Ceiling Guard (<= 6.0h).
+- [x] Cập nhật `modal_pipeline.py` (cài đặt SpecForge trên A100-80GB, bỏ hàm trích xuất offline, gắn volume).
+- [x] Cập nhật `notebooks/train_on_vastai.ipynb` theo pipeline 3 bước mới.
+- [x] Cập nhật `tests/test_final_structure.py` và chạy toàn bộ test suite.
+- [x] Cập nhật `README.md` chuẩn hóa theo hướng dẫn 1-click SpecForge.

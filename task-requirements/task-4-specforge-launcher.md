@@ -2,8 +2,8 @@
 
 - **Mã nhiệm vụ:** `TASK-04`
 - **Tên nhiệm vụ:** Xây dựng module launcher khởi chạy huấn luyện SpecForge
-- **Trạng thái:** Chờ thực hiện (Pending)
-- **Tài liệu tham chiếu:** [training/train.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/training/train.py)
+- **Trạng thái:** Đã hoàn thành (Done)
+- **Tài liệu tham chiếu:** [worklogs/task-4.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/worklogs/task-4.md), [training/train.py](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/training/train.py)
 
 ---
 
@@ -35,6 +35,6 @@ torchrun --nproc_per_node=1 -m specforge.train \
 ---
 
 ## 3. Tiêu chuẩn nghiệm thu (Definition of Done - DoD)
-- [ ] `training/train.py` thực hiện đọc YAML và xây dựng lệnh `torchrun` chính xác 100%.
-- [ ] Có bài test `tests/test_train.py` sử dụng mock `subprocess.run` để kiểm thử cú pháp câu lệnh (dry-run) mà không cần nạp GPU thật.
-- [ ] Bài test `tests/test_train.py` đạt 100% PASS.
+- [x] `training/train.py` thực hiện đọc YAML và xây dựng lệnh `torchrun` chính xác 100%.
+- [x] Có bài test `tests/test_train.py` sử dụng mock `subprocess.run` để kiểm thử cú pháp câu lệnh (dry-run) mà không cần nạp GPU thật.
+- [x] Bài test `tests/test_train.py` đạt 100% PASS.

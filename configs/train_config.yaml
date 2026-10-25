@@ -10,3 +10,10 @@ learning_rate: 1.0e-4
 max_seq_len: 2048
 ttt_length: 5
 tp_size: 1
+save_interval: 1
+save_total_limit: 2
+
+wandb:
+  enabled: true
+  project: "qwen2.5-7b-eagle3.1-speculator"
+  run_name: "eagle3.1-qwen2.5-7b-train"

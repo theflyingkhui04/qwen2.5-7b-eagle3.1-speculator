@@ -1,15 +1,14 @@
 """
 Script package_and_upload.py
-Đóng gói trọng số đầu nháp EAGLE-3.1 sang định dạng model.safetensors và config.json
-chuẩn vLLM ("EagleQwen2ForCausalLM").
-Hỗ trợ xuất precision float16 tương thích 100% với kiến trúc Turing trên Tesla T4.
-Tự động đẩy lên Hugging Face Hub (duckhoi/qwen2.5-7b-eagle3.1-speculator).
+Xác thực tính toàn vẹn của thư mục checkpoint sinh ra từ SpecForge (config.json, model.safetensors),
+đính kèm Model Card (README.md) và tự động tải lên Hugging Face Hub.
 """
 
 import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def build_hf_config(base_config: Dict[str, Any], precision: str = "float16") -> Dict[str, Any]:
     """
-    Xây dựng config.json chuẩn Hugging Face cho vLLM Speculative Decoding.
+    Xây dựng config.json chuẩn Hugging Face cho vLLM / SGLang Speculative Decoding.
     """
     config = dict(base_config)
     config["architectures"] = ["Eagle3_1Qwen2ForCausalLM", "EagleQwen2ForCausalLM"]
@@ -40,7 +39,7 @@ def build_hf_config(base_config: Dict[str, Any], precision: str = "float16") -> 
 
 def verify_package_integrity(export_dir: Any) -> bool:
     """
-    Kiểm định gói xuất: bắt buộc phải có config.json và model.safetensors.
+    Kiểm định gói xuất xưởng: bắt buộc phải có config.json và model.safetensors.
     """
     exp_path = Path(export_dir)
     if not exp_path.exists():
@@ -55,7 +54,8 @@ def verify_package_integrity(export_dir: Any) -> bool:
     try:
         with open(config_file, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        if "EagleQwen2ForCausalLM" not in cfg.get("architectures", []):
+        archs = cfg.get("architectures", [])
+        if "EagleQwen2ForCausalLM" not in archs and "Eagle3_1Qwen2ForCausalLM" not in archs:
             return False
     except Exception:
         return False
@@ -63,102 +63,117 @@ def verify_package_integrity(export_dir: Any) -> bool:
     return True
 
 
+def attach_model_card(export_dir: str, model_card_path: str = "MODEL_CARD.md") -> bool:
+    """
+    Copy MODEL_CARD.md thành README.md trong thư mục checkpoint để hiển thị trên Hugging Face.
+    """
+    exp_path = Path(export_dir)
+    exp_path.mkdir(parents=True, exist_ok=True)
+    target = exp_path / "README.md"
+    card_source = Path(model_card_path)
+
+    if card_source.exists():
+        shutil.copyfile(card_source, target)
+        logger.info("Đã đính kèm Model Card vào: %s", target)
+        return True
+    else:
+        logger.warning("Không tìm thấy %s để đính kèm.", model_card_path)
+        return False
+
+
 def parse_export_args(args: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Đóng gói và tải lên Hugging Face")
-    parser.add_argument("--checkpoint-path", type=str, default="checkpoints/checkpoint_epoch_20.pt", help="Đường dẫn file .pt")
-    parser.add_argument("--config-path", type=str, default="configs/eagle3_qwen2.5_7b.json", help="Đường dẫn file cấu hình gốc")
-    parser.add_argument("--output-dir", type=str, default="output/eagle3_qwen2.5_7b", help="Thư mục xuất thành phẩm")
-    parser.add_argument("--repo-id", type=str, default="duckhoi/qwen2.5-7b-eagle3.1-speculator", help="Repo ID trên Hugging Face")
-    parser.add_argument("--precision", type=str, default="float16", choices=["float16", "bfloat16"], help="Định dạng số thực (float16 tối ưu T4)")
+    """Phân tích các đối số dòng lệnh cho quy trình đóng gói và upload."""
+    parser = argparse.ArgumentParser(description="Xác thực và tải checkpoint SpecForge lên Hugging Face")
+    parser.add_argument(
+        "--output-dir",
+        "--checkpoint-dir",
+        dest="output_dir",
+        type=str,
+        default="checkpoints/qwen2.5-7b-eagle3.1",
+        help="Thư mục checkpoint cần kiểm tra và đóng gói",
+    )
+    parser.add_argument(
+        "--repo-id",
+        type=str,
+        default="theflyingkhui04/qwen2.5-7b-eagle3.1-speculator",
+        help="Repo ID trên Hugging Face Hub",
+    )
+    parser.add_argument(
+        "--model-card",
+        type=str,
+        default="MODEL_CARD.md",
+        help="Đường dẫn file Model Card markdown",
+    )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="float16",
+        choices=["float16", "bfloat16"],
+        help="Định dạng số thực",
+    )
     parser.add_argument("--upload", action="store_true", help="Bật cờ upload lên Hugging Face Hub")
+    parser.add_argument("--dry-run", action="store_true", help="Chạy thử nghiệm mà không tải lên Hugging Face thật")
     return parser.parse_args(args)
 
 
-def package_model(checkpoint_path: str, config_path: str, output_dir: str, precision: str = "float16") -> str:
-    """
-    Chuyển đổi trọng số từ PyTorch .pt sang model.safetensors và xuất config.json.
-    """
-    try:
-        import torch
-        from safetensors.torch import save_file
-    except ImportError:
-        logger.error("torch và safetensors là bắt buộc để đóng gói trọng số.")
-        sys.exit(1)
-
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Nạp và xử lý cấu hình
-    with open(config_path, "r", encoding="utf-8") as f:
-        raw_cfg = json.load(f)
-
-    hf_cfg = build_hf_config(raw_cfg, precision=precision)
-    with open(out_dir / "config.json", "w", encoding="utf-8") as f:
-        json.dump(hf_cfg, f, indent=2, ensure_ascii=False)
-
-    # 2. Chuyển đổi trọng số
-    logger.info("Đang đọc checkpoint từ: %s", checkpoint_path)
-    state = torch.load(checkpoint_path, map_location="cpu")
-    weights = state.get("model_state_dict", state)
-
-    target_dtype = torch.float16 if precision == "float16" else torch.bfloat16
-    converted_weights = {}
-    for k, v in weights.items():
-        if isinstance(v, torch.Tensor):
-            converted_weights[k] = v.to(target_dtype)
-        else:
-            converted_weights[k] = v
-
-    weights_file = out_dir / "model.safetensors"
-    save_file(converted_weights, str(weights_file))
-    logger.info("Đã lưu trọng số safetensors (%s) ra: %s", precision, str(weights_file))
-
-    # 3. Kiểm định tính toàn vẹn
-    if not verify_package_integrity(out_dir):
-        raise RuntimeError("Gói đóng gói không vượt qua bài kiểm tra toàn vẹn!")
-
-    logger.info("Gói xuất bản đã sẵn sàng tại: %s", str(out_dir))
-    return str(out_dir)
-
-
-def upload_to_huggingface(export_dir: str, repo_id: str, token: Optional[str] = None):
+def upload_to_huggingface(
+    export_dir: str,
+    repo_id: str,
+    token: Optional[str] = None,
+    dry_run: bool = False,
+) -> bool:
     """
     Tải thư mục checkpoint lên Hugging Face Hub.
+    Hỗ trợ chế độ dry-run để kiểm thử cục bộ an toàn.
     """
+    if dry_run:
+        logger.info("[DRY RUN] Bỏ qua bước upload thực tế lên Hugging Face repo: %s", repo_id)
+        return True
+
     try:
         from huggingface_hub import HfApi
     except ImportError:
         logger.error("Cần cài đặt thư viện huggingface_hub để upload.")
-        sys.exit(1)
+        return False
 
     hf_token = token or os.getenv("HF_TOKEN")
     if not hf_token:
         logger.warning("Không tìm thấy HF_TOKEN! Bỏ qua bước tải lên Hugging Face.")
-        return
+        return False
 
     logger.info("Đang tải toàn bộ thư mục %s lên repo %s...", export_dir, repo_id)
-    api = HfApi(token=hf_token)
-    api.create_repo(repo_id=repo_id, exist_ok=True, repo_type="model")
-    api.upload_folder(
-        folder_path=export_dir,
-        repo_id=repo_id,
-        repo_type="model",
-        commit_message="feat: upload EAGLE-3.1 draft head weights for Qwen2.5-7B-Instruct",
-    )
-    logger.info("Đã upload thành công lên: https://huggingface.co/%s", repo_id)
+    try:
+        api = HfApi(token=hf_token)
+        api.create_repo(repo_id=repo_id, exist_ok=True, repo_type="model")
+        api.upload_folder(
+            folder_path=export_dir,
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message="feat: upload EAGLE-3.1 draft head weights trained via SpecForge",
+        )
+        logger.info("Đã upload thành công lên: https://huggingface.co/%s", repo_id)
+        return True
+    except Exception as e:
+        logger.error("Lỗi khi tải lên Hugging Face Hub: %s", e)
+        return False
 
 
 def main():
     args = parse_export_args()
-    packaged_dir = package_model(
-        checkpoint_path=args.checkpoint_path,
-        config_path=args.config_path,
-        output_dir=args.output_dir,
-        precision=args.precision,
-    )
+    if not verify_package_integrity(args.output_dir):
+        logger.error("Thư mục %s không hợp lệ hoặc thiếu checkpoint!", args.output_dir)
+        sys.exit(1)
 
-    if args.upload:
-        upload_to_huggingface(export_dir=packaged_dir, repo_id=args.repo_id)
+    attach_model_card(args.output_dir, args.model_card)
+
+    if args.upload or args.dry_run:
+        success = upload_to_huggingface(
+            export_dir=args.output_dir,
+            repo_id=args.repo_id,
+            dry_run=args.dry_run,
+        )
+        if not success and not args.dry_run:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

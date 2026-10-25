@@ -14,6 +14,7 @@ def test_full_repository_layout():
         "data/prepare_hybrid_dataset.py",
         "training/train.py",
         "export/package_and_upload.py",
+        "modal_pipeline.py",
         "notebooks/train_on_vastai.ipynb",
         "run_all.sh",
     ]

@@ -1,298 +1,371 @@
 """
 Script train.py
-Vòng lặp huấn luyện chính cho đầu nháp suy đoán EAGLE-3.1 (Qwen2.5-7B).
-Tối ưu hóa bằng AdamW, Cosine Annealing decay, Gradient Accumulation.
-Hỗ trợ tự động phục hồi Checkpoint và thu gom rác bộ nhớ GPU (OOM Guard).
+Launcher nạp cấu hình configs/train_config.yaml và khởi chạy tiến trình huấn luyện
+SpecForge (sgl-project/SpecForge) cho đầu nháp EAGLE-3.1 (Qwen2.5-7B).
+Hỗ trợ lưu checkpoint định kỳ, đồng bộ Weights & Biases (WandB) và tự động resume.
 """
 
 import argparse
-import glob
+import json
 import logging
-import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from training.loss import EagleDualLoss
-from training.model import Eagle3SpeculatorConfig, Eagle3SpeculatorHead
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def parse_training_args(args: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Huấn luyện đầu nháp EAGLE-3.1")
+    """Phân tích các đối số dòng lệnh cho launcher."""
+    parser = argparse.ArgumentParser(description="Khởi chạy SpecForge Training Launcher cho EAGLE-3.1")
     parser.add_argument("--config", type=str, default="configs/train_config.yaml", help="Đường dẫn file cấu hình YAML")
-    parser.add_argument("--resume", action="store_true", help="Tự động tiếp tục từ checkpoint gần nhất")
-    parser.add_argument("--checkpoint-path", type=str, default=None, help="Đường dẫn checkpoint cụ thể cần nạp")
-    parser.add_argument("--epochs", type=int, default=None, help="Ghi đè số epoch huấn luyện")
-    parser.add_argument("--batch-size", type=int, default=None, help="Ghi đè batch size")
+    parser.add_argument("--gpus", type=int, default=1, help="Số lượng GPU sử dụng (nproc_per_node)")
+    parser.add_argument("--resume", action="store_true", help="Tự động tiếp tục từ checkpoint trong output_dir")
+    parser.add_argument("--resume-best", action="store_true", help="Ưu tiên tiếp tục từ best checkpoint thay vì latest")
+    parser.add_argument("--checkpoint-path", type=str, default=None, help="Đường dẫn checkpoint cụ thể để resume/warm-start")
+    parser.add_argument("--save-total-limit", type=int, default=None, help="Số lượng checkpoint tối đa lưu trên đĩa (giữ best + N latest)")
+    parser.add_argument("--wandb", action="store_true", help="Kích hoạt ghi log lên Weights & Biases")
+    parser.add_argument("--dry-run", action="store_true", help="Chỉ sinh câu lệnh mà không thực thi subprocess")
     return parser.parse_args(args)
 
 
 def load_training_config(config_path: str) -> Dict[str, Any]:
+    """Nạp file cấu hình YAML huấn luyện."""
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def get_latest_checkpoint(checkpoint_dir: Any) -> Optional[Path]:
-    """Tìm checkpoint có số epoch lớn nhất trong thư mục."""
+def find_best_checkpoint(checkpoint_dir: Any) -> Optional[Path]:
+    """
+    Tìm checkpoint tốt nhất (dựa trên thư mục best/ hoặc file model_best/checkpoint-best).
+    """
     chk_dir = Path(checkpoint_dir)
     if not chk_dir.exists():
         return None
 
-    chk_files = list(chk_dir.glob("checkpoint_epoch_*.pt"))
-    if not chk_files:
+    # 1. Kiểm tra các thư mục best ưu tiên
+    for best_name in ["best", "best_checkpoint", "checkpoint-best"]:
+        best_path = chk_dir / best_name
+        if best_path.exists():
+            return best_path
+
+    # 2. Kiểm tra file đánh dấu metadata best_metric.json nếu có
+    meta_file = chk_dir / "best_metric.json"
+    if meta_file.exists():
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+                b_path = meta.get("best_checkpoint_path")
+                if b_path and Path(b_path).exists():
+                    return Path(b_path)
+        except Exception:
+            pass
+
+    return None
+
+
+def find_latest_checkpoint(checkpoint_dir: Any) -> Optional[Path]:
+    """
+    Tìm checkpoint có số bước hoặc số epoch lớn nhất trong thư mục đầu ra.
+    Hỗ trợ cả thư mục con (checkpoint-*) và file (.pt, .safetensors).
+    """
+    chk_dir = Path(checkpoint_dir)
+    if not chk_dir.exists():
         return None
 
-    def extract_epoch(p: Path) -> int:
-        match = re.search(r"checkpoint_epoch_(\d+)\.pt", p.name)
-        return int(match.group(1)) if match else -1
+    candidates: List[Tuple[int, Path]] = []
 
-    chk_files.sort(key=extract_epoch)
-    return chk_files[-1]
+    for p in chk_dir.iterdir():
+        if p.name in ["best", "best_checkpoint", "checkpoint-best", "best_metric.json"]:
+            continue
+        if p.is_dir():
+            match = re.search(r"(?:checkpoint|step|epoch)[-_](\d+)", p.name, re.IGNORECASE)
+            if match:
+                candidates.append((int(match.group(1)), p))
+            elif (p / "model.safetensors").exists() or (p / "training_state.pt").exists():
+                candidates.append((0, p))
+        elif p.is_file():
+            match = re.search(r"(?:checkpoint|step|epoch)[-_](\d+)\.(?:pt|safetensors|bin)", p.name, re.IGNORECASE)
+            if match:
+                candidates.append((int(match.group(1)), p))
+            elif p.name in ["model.safetensors", "training_state.pt"]:
+                candidates.append((0, p))
 
+    if not candidates:
+        return None
 
-def save_checkpoint(
-    model: Any,
-    optimizer: Any,
-    scheduler: Any,
-    epoch: int,
-    step: int,
-    output_dir: str,
-) -> str:
-    """Lưu checkpoint tiến trình huấn luyện."""
-    try:
-        import torch
-    except ImportError:
-        return ""
-
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    file_path = out_path / f"checkpoint_epoch_{epoch}.pt"
-
-    state = {
-        "epoch": epoch,
-        "step": step,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict() if optimizer else None,
-        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
-    }
-    torch.save(state, str(file_path))
-    logger.info("Đã lưu checkpoint epoch %d vào: %s", epoch, str(file_path))
-    return str(file_path)
+    candidates.sort(key=lambda x: x[0])
+    return candidates[-1][1]
 
 
-def run_training(
-    config: Dict[str, Any],
-    resume: bool = True,
-    checkpoint_path: Optional[str] = None,
-    epochs: Optional[int] = None,
-    batch_size: Optional[int] = None,
-    on_epoch_end: Optional[Any] = None,
-):
-    try:
-        import torch
-        from torch.optim import AdamW
-        from torch.optim.lr_scheduler import CosineAnnealingLR
-        from safetensors.torch import load_file
-    except ImportError:
-        logger.error("torch và safetensors là bắt buộc để huấn luyện trên GPU.")
-        sys.exit(1)
+def find_resume_checkpoint(checkpoint_dir: Any, prefer_best: bool = True) -> Optional[Path]:
+    """
+    Tìm checkpoint tối ưu để tiếp tục huấn luyện:
+    - Nếu prefer_best=True: Ưu tiên tìm best_checkpoint trước, nếu không có mới lấy latest.
+    - Nếu prefer_best=False: Lấy checkpoint có step/epoch cao nhất (latest).
+    """
+    if prefer_best:
+        best = find_best_checkpoint(checkpoint_dir)
+        if best:
+            return best
+    return find_latest_checkpoint(checkpoint_dir)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32
-    logger.info("Khởi tạo môi trường huấn luyện trên thiết bị: %s (dtype=%s)", device, dtype)
 
-    # 1. Khởi tạo mô hình
-    model_cfg_path = config["model"]["config_path"]
-    model_config = Eagle3SpeculatorConfig.from_json_file(model_cfg_path)
-    model = Eagle3SpeculatorHead(model_config).to(device=device, dtype=dtype)
+def prune_old_checkpoints(checkpoint_dir: Any, keep_limit: int = 2) -> List[Path]:
+    """
+    Dọn dẹp các checkpoint cũ dư thừa để tiết kiệm dung lượng đĩa và băng thông tải về.
+    Luôn bảo vệ tuyệt đối thư mục 'best' và giữ lại tối đa `keep_limit` checkpoint mới nhất.
+    """
+    chk_dir = Path(checkpoint_dir)
+    if not chk_dir.exists():
+        return []
 
-    # 2. Loss & Optimizer
-    loss_cfg = config.get("loss", {})
-    loss_fn = EagleDualLoss(
-        smooth_l1_weight=loss_cfg.get("smooth_l1_weight", 0.5),
-        ce_weight=loss_cfg.get("ce_weight", 1.0),
-    )
+    candidates: List[Tuple[int, Path]] = []
+    best_path = find_best_checkpoint(chk_dir)
 
-    train_cfg = config["training"]
-    total_epochs = epochs or train_cfg.get("epochs", 20)
-    effective_batch_size = batch_size or train_cfg.get("batch_size", 16)
-    grad_accum_steps = train_cfg.get("gradient_accumulation_steps", 2)
-    lr = float(train_cfg.get("learning_rate", 3e-4))
-    weight_decay = float(train_cfg.get("weight_decay", 0.01))
-    betas = (float(train_cfg.get("adam_beta1", 0.9)), float(train_cfg.get("adam_beta2", 0.95)))
+    for p in chk_dir.iterdir():
+        # Không bao giờ xóa thư mục best hoặc file metadata
+        if best_path and (p == best_path or p.resolve() == best_path.resolve()):
+            continue
+        if p.name in ["best", "best_checkpoint", "checkpoint-best", "best_metric.json"]:
+            continue
 
-    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay, betas=betas)
-    scheduler = CosineAnnealingLR(optimizer, T_max=total_epochs, eta_min=float(train_cfg.get("min_learning_rate", 1e-5)))
+        if p.is_dir():
+            match = re.search(r"(?:checkpoint|step|epoch)[-_](\d+)", p.name, re.IGNORECASE)
+            if match:
+                candidates.append((int(match.group(1)), p))
+        elif p.is_file():
+            match = re.search(r"(?:checkpoint|step|epoch)[-_](\d+)\.(?:pt|safetensors|bin)", p.name, re.IGNORECASE)
+            if match:
+                candidates.append((int(match.group(1)), p))
 
-    # 3. Phục hồi checkpoint nếu có
-    start_epoch = 1
-    global_step = 0
-    checkpoint_to_load = checkpoint_path
-    if not checkpoint_to_load and resume:
-        checkpoint_to_load = get_latest_checkpoint(train_cfg.get("output_dir", "checkpoints"))
+    candidates.sort(key=lambda x: x[0])
 
-    if checkpoint_to_load:
-        logger.info("Đang nạp checkpoint từ: %s", checkpoint_to_load)
-        chk = torch.load(checkpoint_to_load, map_location=device)
-        model.load_state_dict(chk["model_state_dict"])
-        if "optimizer_state_dict" in chk and chk["optimizer_state_dict"]:
-            optimizer.load_state_dict(chk["optimizer_state_dict"])
-        if "scheduler_state_dict" in chk and chk["scheduler_state_dict"]:
-            scheduler.load_state_dict(chk["scheduler_state_dict"])
-        start_epoch = chk.get("epoch", 0) + 1
-        global_step = chk.get("step", 0)
-        logger.info("Tiếp tục huấn luyện từ epoch %d, step %d", start_epoch, global_step)
-
-    # 4. Tìm kiếm các file feature chunks
-    features_dir = Path(config["data"]["features_dir"])
-    feature_files = sorted(features_dir.glob("features_chunk_*.safetensors"))
-    if not feature_files:
-        logger.warning("Không tìm thấy file feature nào trong %s. Hãy chạy extraction trước!", features_dir)
-        return
-
-    logger.info("Tìm thấy %d file feature chunk. Bắt đầu huấn luyện %d epochs...", len(feature_files), total_epochs)
-
-    # 5. Khởi tạo Weights & Biases nếu có API key
-    wandb_run = None
-    if os.environ.get("WANDB_API_KEY"):
-        try:
-            import wandb
-            # Ưu tiên cấu hình lưu vào Team itsduckhoi04-ptit
-            wandb_entity = os.environ.get("WANDB_ENTITY", "itsduckhoi04-ptit")
-
-            init_kwargs = {
-                "project": "qwen2.5-eagle3.1-speculator",
-                "name": f"eagle3.1-qwen2.5-7b-{total_epochs}ep",
-                "config": config,
-                "entity": wandb_entity,
-            }
+    deleted: List[Path] = []
+    if len(candidates) > keep_limit:
+        to_remove = candidates[:-keep_limit]
+        for _, path_to_del in to_remove:
             try:
-                wandb_run = wandb.init(**init_kwargs)
-            except Exception as e_team:
-                logger.warning("Không thể khởi tạo W&B trong Team '%s' (%s). Đang tự động fallback về tài khoản cá nhân...", wandb_entity, e_team)
-                init_kwargs["entity"] = "itsduckhoi04"
-                wandb_run = wandb.init(**init_kwargs)
+                if path_to_del.is_dir():
+                    shutil.rmtree(path_to_del)
+                else:
+                    path_to_del.unlink()
+                deleted.append(path_to_del)
+                logger.info("Đã dọn dẹp checkpoint cũ dư thừa: %s", path_to_del.name)
+            except Exception as e:
+                logger.warning("Không thể xóa checkpoint cũ %s: %s", path_to_del, e)
 
-            logger.info("Đã kết nối W&B thành công: %s", wandb_run.url)
-        except Exception as e:
-            logger.warning("Không thể khởi tạo W&B (%s), tiếp tục huấn luyện với logger tiêu chuẩn.", e)
+    return deleted
 
-    output_dir = train_cfg.get("output_dir", "checkpoints")
-    checkpoint_interval = train_cfg.get("checkpoint_interval_epochs", 1)
 
-    for epoch in range(start_epoch, total_epochs + 1):
-        model.train()
-        total_epoch_loss = 0.0
-        total_ce_loss = 0.0
-        total_reg_loss = 0.0
-        num_batches = 0
+def setup_wandb_metrics(cfg: Dict[str, Any]) -> bool:
+    """
+    Tự động cấu hình trước các metric, trục hoành độ (step_metric) và
+    chỉ số tóm tắt (summary min/max) trên giao diện Weights & Biases bằng code.
+    """
+    wandb_cfg = cfg.get("wandb", {})
+    wandb_enabled = False
+    if isinstance(wandb_cfg, dict) and wandb_cfg.get("enabled"):
+        wandb_enabled = True
+    elif cfg.get("report_to") == "wandb":
+        wandb_enabled = True
 
-        for f_path in feature_files:
-            data = load_file(str(f_path))
-            # Giữ hidden_states và input_ids trên host RAM (CPU) của container, KHÔNG nạp cả chunk 36GB vào GPU VRAM!
-            hidden_states = data["hidden_states"]
-            input_ids = data["input_ids"]
-            num_samples = hidden_states.size(0)
+    if not wandb_enabled:
+        return False
 
-            for b in range(0, num_samples, effective_batch_size):
-                # Chỉ đưa đúng mini-batch (vài chục MB) vào GPU VRAM
-                b_hidden = hidden_states[b : b + effective_batch_size].to(device=device, dtype=dtype)
-                b_ids = input_ids[b : b + effective_batch_size].to(device=device)
+    try:
+        import os
+        import wandb
 
-                # Chuẩn bị input/target (đảm bảo contiguous memory layout)
-                target_tokens = b_ids[:, 1:].contiguous()
-                target_hidden = b_hidden[:, 1:, :].contiguous()
-                input_hidden = b_hidden[:, :-1, :].contiguous()
-                input_embeds = b_hidden[:, :-1, :].contiguous()
-
-                logits, pred_hidden = model(input_hidden, input_embeds)
-
-                loss, metrics = loss_fn(logits, target_tokens, pred_hidden, target_hidden)
-                loss = loss / grad_accum_steps
-                loss.backward()
-
-                if (global_step + 1) % grad_accum_steps == 0:
-                    optimizer.step()
-                    optimizer.zero_grad()
-
-                total_epoch_loss += metrics["total_loss"]
-                total_ce_loss += metrics["ce_loss"]
-                total_reg_loss += metrics["reg_loss"]
-                num_batches += 1
-                global_step += 1
-
-                # Giải phóng bộ nhớ batch sau mỗi step
-                del b_hidden, b_ids, target_tokens, target_hidden, input_hidden, input_embeds, logits, pred_hidden, loss
-
-            # Dọn dẹp RAM container và VRAM sau mỗi chunk
-            del data, hidden_states, input_ids
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-                # Log step định kỳ lên W&B
-                if wandb_run and global_step % 20 == 0:
-                    wandb.log({
-                        "step": global_step,
-                        "step/total_loss": metrics["total_loss"],
-                        "step/ce_loss": metrics["ce_loss"],
-                        "step/reg_loss": metrics["reg_loss"],
-                        "step/learning_rate": scheduler.get_last_lr()[0],
-                    })
-
-        scheduler.step()
-        avg_loss = total_epoch_loss / max(num_batches, 1)
-        avg_ce = total_ce_loss / max(num_batches, 1)
-        avg_reg = total_reg_loss / max(num_batches, 1)
-        current_lr = scheduler.get_last_lr()[0]
-
-        logger.info(
-            "Epoch [%d/%d] - Avg Loss: %.4f (CE: %.4f, SmoothL1: %.4f) - LR: %.6f",
-            epoch, total_epochs, avg_loss, avg_ce, avg_reg, current_lr,
+        project = (wandb_cfg.get("project") if isinstance(wandb_cfg, dict) else None) or cfg.get(
+            "wandb_project", "qwen2.5-7b-eagle3.1-speculator"
+        )
+        run_name = (wandb_cfg.get("run_name") if isinstance(wandb_cfg, dict) else None) or cfg.get(
+            "wandb_run_name", "eagle3.1-qwen2.5-7b-train"
         )
 
-        if wandb_run:
-            wandb.log({
-                "epoch": epoch,
-                "epoch/total_loss": avg_loss,
-                "epoch/ce_loss": avg_ce,
-                "epoch/reg_loss": avg_reg,
-                "epoch/learning_rate": current_lr,
-            })
+        run = wandb.init(
+            project=project,
+            name=run_name,
+            resume="allow",
+            reinit=True,
+        )
 
-        # OOM Guard: Thu gom rác bộ nhớ sau mỗi epoch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # Định nghĩa trục thời gian chuẩn cho các nhóm metric
+        run.define_metric("train/step")
+        run.define_metric("epoch")
+        run.define_metric("train/*", step_metric="train/step")
+        run.define_metric("eval/*", step_metric="train/step")
+        run.define_metric("val/*", step_metric="train/step")
+        run.define_metric("acceptance/*", step_metric="train/step")
 
-        # Lưu checkpoint theo chu kỳ (mỗi epoch) và kích hoạt on_epoch_end
-        if epoch % checkpoint_interval == 0 or epoch == total_epochs:
-            save_checkpoint(model, optimizer, scheduler, epoch, global_step, output_dir)
-            if on_epoch_end:
-                try:
-                    on_epoch_end(epoch)
-                except Exception as e:
-                    logger.warning("Lỗi trong on_epoch_end callback: %s", e)
+        # Định nghĩa các chỉ số tóm tắt tốt nhất (Best Summaries)
+        run.define_metric("train/loss", summary="min")
+        run.define_metric("train/ce_loss", summary="min")
+        run.define_metric("train/reg_loss", summary="min")
+        run.define_metric("eval/loss", summary="min")
+        run.define_metric("val/dual_loss", summary="min")
+        run.define_metric("acceptance/alpha_overall", summary="max")
+        for k in range(1, 6):
+            run.define_metric(f"acceptance/alpha_step_{k}", summary="max")
 
-    if wandb_run:
-        wandb.finish()
+        # Kế thừa run ID cho tiến trình subprocess torchrun
+        if hasattr(run, "id") and run.id:
+            os.environ["WANDB_RUN_ID"] = str(run.id)
+            os.environ["WANDB_RESUME"] = "allow"
 
-    logger.info("Quá trình huấn luyện đã hoàn thành thành công!")
+        run.finish()
+        logger.info("Đã cấu hình trước biểu đồ và metric trên WandB: %s (run: %s)", project, run_name)
+        return True
+    except Exception as e:
+        logger.warning("Bỏ qua tiền cấu hình WandB metrics: %s", e)
+        return False
+
+
+def build_specforge_command(
+    cfg: Dict[str, Any],
+    num_gpus: int = 1,
+    resume: bool = False,
+    prefer_best: bool = True,
+    checkpoint_path: Optional[str] = None,
+    wandb_override: Optional[bool] = None,
+) -> List[str]:
+    """
+    Chuyển đổi các siêu tham số từ train_config.yaml sang command line gọi torchrun specforge.train.
+    Hỗ trợ cờ resume checkpoint (ưu tiên best_checkpoint), lưu định kỳ save-interval và Weights & Biases (WandB).
+    """
+    target_model_path = cfg.get("target_model_path") or cfg.get("model_path") or "Qwen/Qwen2.5-7B-Instruct"
+    draft_model_config = cfg.get("draft_model_config") or cfg.get("draft_config") or "configs/eagle3.1_qwen2.5_7b.json"
+    train_data_path = cfg.get("train_data_path") or cfg.get("data_path") or "data/processed/train.jsonl"
+    output_dir = cfg.get("output_dir", "checkpoints/qwen2.5-7b-eagle3.1")
+    num_epochs = cfg.get("num_epochs", 3)
+    batch_size = cfg.get("batch_size") or cfg.get("micro_batch_size", 2)
+    grad_accum_steps = cfg.get("gradient_accumulation_steps") or cfg.get("grad_accum_steps", 4)
+    lr = cfg.get("learning_rate") or cfg.get("lr", 1.0e-4)
+    max_seq_len = cfg.get("max_seq_len", 2048)
+    ttt_length = cfg.get("ttt_length", 5)
+    tp_size = cfg.get("tp_size", 1)
+
+    cmd = [
+        "torchrun",
+        f"--nproc_per_node={num_gpus}",
+        "-m", "specforge.train",
+        "--model-path", str(target_model_path),
+        "--draft-config", str(draft_model_config),
+        "--data-path", str(train_data_path),
+        "--output-dir", str(output_dir),
+        "--num-epochs", str(num_epochs),
+        "--micro-batch-size", str(batch_size),
+        "--grad-accum-steps", str(grad_accum_steps),
+        "--lr", str(lr),
+        "--max-seq-len", str(max_seq_len),
+        "--ttt-length", str(ttt_length),
+        "--tp-size", str(tp_size),
+    ]
+
+    # Cấu hình lưu checkpoint định kỳ
+    save_interval = cfg.get("save_interval") or cfg.get("save_interval_epochs")
+    if save_interval:
+        cmd.extend(["--save-interval", str(save_interval)])
+
+    # Xử lý tự động tiếp tục (Resume) hoặc nạp checkpoint khởi đầu (Warm-start)
+    resolved_checkpoint: Optional[str] = None
+    if checkpoint_path:
+        resolved_checkpoint = checkpoint_path
+    elif resume or cfg.get("resume") or cfg.get("resume_best"):
+        chosen = find_resume_checkpoint(output_dir, prefer_best=prefer_best)
+        if chosen:
+            resolved_checkpoint = str(chosen)
+            tag = "best" if chosen == find_best_checkpoint(output_dir) else "latest"
+            logger.info("Đã phát hiện checkpoint (%s) để tiếp tục: %s", tag, resolved_checkpoint)
+        else:
+            logger.warning("Không tìm thấy checkpoint nào trong %s để resume. Bắt đầu huấn luyện từ đầu.", output_dir)
+    elif cfg.get("draft_checkpoint_path") or cfg.get("resume_from_checkpoint"):
+        resolved_checkpoint = str(cfg.get("draft_checkpoint_path") or cfg.get("resume_from_checkpoint"))
+
+    if resolved_checkpoint:
+        cmd.extend(["--draft-checkpoint-path", str(resolved_checkpoint)])
+
+    # Xử lý kết nối Weights & Biases (WandB)
+    wandb_cfg = cfg.get("wandb", {})
+    wandb_enabled = False
+    if wandb_override is True:
+        wandb_enabled = True
+    elif isinstance(wandb_cfg, dict) and wandb_cfg.get("enabled"):
+        wandb_enabled = True
+    elif cfg.get("report_to") == "wandb":
+        wandb_enabled = True
+
+    if wandb_enabled:
+        cmd.extend(["--report-to", "wandb"])
+        project = (wandb_cfg.get("project") if isinstance(wandb_cfg, dict) else None) or cfg.get("wandb_project")
+        if project:
+            cmd.extend(["--wandb-project", str(project)])
+        run_name = (wandb_cfg.get("run_name") if isinstance(wandb_cfg, dict) else None) or cfg.get("wandb_run_name")
+        if run_name:
+            cmd.extend(["--wandb-name", str(run_name)])
+
+    return cmd
+
+
+def run_specforge_training(
+    config_path: str,
+    num_gpus: int = 1,
+    resume: bool = False,
+    prefer_best: bool = True,
+    checkpoint_path: Optional[str] = None,
+    save_total_limit: Optional[int] = None,
+    wandb: Optional[bool] = None,
+    dry_run: bool = False,
+) -> List[str]:
+    """Nạp cấu hình, dựng lệnh và thực thi tiến trình huấn luyện."""
+    cfg = load_training_config(config_path)
+    cmd = build_specforge_command(
+        cfg,
+        num_gpus=num_gpus,
+        resume=resume,
+        prefer_best=prefer_best,
+        checkpoint_path=checkpoint_path,
+        wandb_override=wandb,
+    )
+    logger.info("Lệnh khởi chạy SpecForge: %s", " ".join(cmd))
+
+    if dry_run:
+        logger.info("[DRY RUN] Bỏ qua thực thi lệnh subprocess.")
+        return cmd
+
+    # Tiền cấu hình các metric và biểu đồ WandB nếu được bật
+    wandb_flag = wandb if wandb is not None else cfg.get("wandb", {}).get("enabled", False)
+    if wandb_flag:
+        setup_wandb_metrics(cfg)
+
+    subprocess.run(cmd, check=True)
+
+    # Dọn dẹp checkpoint cũ vượt quá giới hạn lưu trữ (chỉ giữ best + N latest)
+    limit = save_total_limit or cfg.get("save_total_limit", 2)
+    output_dir = cfg.get("output_dir", "checkpoints/qwen2.5-7b-eagle3.1")
+    prune_old_checkpoints(output_dir, keep_limit=limit)
+
+    return cmd
 
 
 def main():
     args = parse_training_args()
-    config = load_training_config(args.config)
-    run_training(
-        config=config,
-        resume=args.resume,
+    run_specforge_training(
+        config_path=args.config,
+        num_gpus=args.gpus,
+        resume=args.resume or args.resume_best,
+        prefer_best=not (args.resume and not args.resume_best),
         checkpoint_path=args.checkpoint_path,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
+        save_total_limit=args.save_total_limit,
+        wandb=args.wandb if args.wandb else None,
+        dry_run=args.dry_run,
     )
 
 
