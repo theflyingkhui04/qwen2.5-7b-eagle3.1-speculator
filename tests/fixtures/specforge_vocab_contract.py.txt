@@ -1,0 +1,288 @@
+# Read-only test excerpts from sgl-project/SpecForge, Apache-2.0.
+# Revision: fddcb4ad37733a821708170df28cac2f7bb6ea05
+# Original functions are unchanged; imports/heavy decoder initialization are
+# supplied by the tests. Never used by the production runtime.
+# Sources: specforge/training/model_loading.py; modeling/draft/llama3_eagle.py;
+# data/preprocessing.py; training/assembly.py; training/vocab_mapping.py.
+from __future__ import annotations
+
+def _draft_config_from_dict(payload: Dict[str, Any]) -> "PretrainedConfig":
+    # Importing the draft package registers every built-in architecture before
+    # consulting the registry. Model modules keep accelerator-only dependencies
+    # behind execution boundaries, so this remains safe in a CPU producer.
+    import specforge.modeling.draft  # noqa: F401
+    from specforge.modeling.draft.registry import DRAFT_REGISTRY, available_drafts
+
+    payload = dict(payload)
+    architectures = payload.get("architectures") or []
+    if not isinstance(architectures, (list, tuple)) or len(architectures) != 1:
+        raise ValueError(
+            "draft config must name exactly one architecture; " f"got {architectures!r}"
+        )
+    architecture = architectures[0]
+    if architecture not in DRAFT_REGISTRY:
+        raise ValueError(
+            f"draft architecture {architecture!r} is not registered; "
+            f"available: {available_drafts()}"
+        )
+
+    payload["architectures"] = [architecture]
+    payload["tie_word_embeddings"] = False
+    payload.setdefault("use_cache", True)
+    if "draft_vocab_size" in payload and payload["draft_vocab_size"] is None:
+        raise ValueError("draft config draft_vocab_size cannot be null")
+    if "draft_vocab_size" not in payload:
+        payload["draft_vocab_size"] = payload.get("vocab_size")
+    return DRAFT_REGISTRY[architecture].config_class.from_dict(payload)
+
+class LlamaForCausalLMEagle3(Eagle3DraftModel):
+
+    config_class = LlamaConfig
+
+    def __init__(self, config, quant_config=None, attention_backend="sdpa") -> None:
+        super().__init__(config)
+        self.config = config
+        self.quant_config = quant_config
+
+        self.vocab_size = config.vocab_size
+        self.draft_vocab_size = config.draft_vocab_size
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size, config.hidden_size, config.pad_token_id
+        )
+        self.midlayer = LlamaDecoderLayer(config, attention_backend=attention_backend)
+
+        self.target_hidden_size = getattr(
+            config, "target_hidden_size", config.hidden_size
+        )
+
+        self.fc = torch.nn.Linear(
+            self.target_hidden_size * 3,
+            config.hidden_size,
+            bias=False,
+        )
+        if getattr(config, "fc_norm", False):
+            self.fc_norm = nn.ModuleList(
+                [
+                    LlamaRMSNorm(self.target_hidden_size, eps=config.rms_norm_eps)
+                    for _ in range(3)
+                ]
+            )
+        else:
+            self.fc_norm = None
+
+        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm_output = getattr(config, "norm_output", False)
+        self.lm_head = nn.Linear(
+            config.hidden_size, config.draft_vocab_size, bias=False
+        )
+
+        # create vocab buffers
+        t2d = torch.ones(self.vocab_size, dtype=torch.bool)
+        d2t = torch.zeros(self.draft_vocab_size, dtype=torch.int64)
+        self.register_buffer("t2d", t2d)
+        self.register_buffer("d2t", d2t)
+
+        self.post_init()
+
+    def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.lm_head(
+            hidden_states if self.norm_output else self.norm(hidden_states)
+        )
+
+def process_token_dict_to_mappings(
+    token_dict: Counter,
+    draft_vocab_size: int,
+    target_vocab_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Process token_dict to create d2t and t2d mappings, with optional caching.
+
+    Args:
+        token_dict: A Counter object mapping token ids to their frequencies.
+        draft_vocab_size: The size of the draft vocabulary.
+        target_vocab_size: The size of the target vocabulary.
+
+    Returns:
+        A tuple containing:
+            - d2t: A tensor mapping draft token ids to target token ids.
+            - t2d: A tensor mapping target token ids to draft token ids.
+    """
+    if len(token_dict) < draft_vocab_size:
+        existing_tokens = set(token_dict.keys())
+        missing_tokens = set(range(draft_vocab_size)) - existing_tokens
+        for token in missing_tokens:
+            token_dict[token] = 0
+            if len(token_dict) >= draft_vocab_size:
+                break
+    print(f"Added missing tokens to reach draft vocab size: {draft_vocab_size}")
+    print(f"Total tokens after addition: {len(token_dict)}")
+    total_frequency = sum(token_dict.values())
+    top_N = token_dict.most_common(draft_vocab_size)
+    top_N_frequency_sum = sum(freq for key, freq in top_N)
+
+    if total_frequency == 0:
+        print(
+            "Warning: Total token frequency is zero. All tokens will have zero ratio."
+        )
+        top_N_ratio = 0.0
+    else:
+        top_N_ratio = top_N_frequency_sum / total_frequency
+
+    print(f"top {draft_vocab_size} token frequency ratio: {top_N_ratio:.2%}")
+    used_tokens = [key for key, freq in top_N]
+    used_tokens.sort()
+
+    d2t = [used_tokens[i] - i for i in range(len(used_tokens))]
+    t2d = [i in used_tokens for i in range(target_vocab_size)]
+    d2t = torch.tensor(d2t)
+    t2d = torch.tensor(t2d)
+
+    return d2t, t2d
+
+def count_effective_feature_tokens(
+    hidden_states_path: str,
+    *,
+    max_length: Optional[int] = None,
+    target_vocab_size: Optional[int] = None,
+) -> Counter:
+    """Count loss-bearing tokens directly from prepared offline features.
+
+    Offline feature files already contain the exact ``input_ids`` and
+    ``loss_mask`` used for training. Reading those tensors avoids requiring the
+    original raw conversation dataset solely to rebuild a vocabulary map.
+    """
+    from specforge.runtime.data_plane.feature_store import load_feature_file
+    from specforge.runtime.data_plane.offline_reader import list_feature_files
+
+    paths = list_feature_files(hidden_states_path)
+    if not paths:
+        raise ValueError(f"no offline feature files found under {hidden_states_path!r}")
+
+    counts: Counter = Counter()
+    for path in paths:
+        raw = load_feature_file(path)
+        missing = [name for name in ("input_ids", "loss_mask") if name not in raw]
+        if missing:
+            raise KeyError(
+                f"{path} cannot derive an EAGLE vocab mapping; missing {missing}"
+            )
+        input_ids = raw["input_ids"].reshape(-1)
+        loss_mask = raw["loss_mask"].reshape(-1)
+        if input_ids.numel() != loss_mask.numel():
+            raise ValueError(
+                f"{path} has {input_ids.numel()} input ids but "
+                f"{loss_mask.numel()} loss-mask entries"
+            )
+        if max_length is not None:
+            input_ids = input_ids[:max_length]
+            loss_mask = loss_mask[:max_length]
+        selected = input_ids[loss_mask.to(dtype=bool)]
+        if selected.numel() == 0:
+            continue
+        token_ids, frequencies = selected.unique(return_counts=True)
+        for token_id, frequency in zip(token_ids.tolist(), frequencies.tolist()):
+            token_id = int(token_id)
+            if token_id < 0:
+                raise ValueError(f"{path} contains negative token id {token_id}")
+            if target_vocab_size is not None and token_id >= target_vocab_size:
+                raise ValueError(
+                    f"{path} contains token id {token_id}, outside target vocab "
+                    f"size {target_vocab_size}"
+                )
+            counts[token_id] += int(frequency)
+    return counts
+
+
+__all__ = ["count_effective_feature_tokens"]
+
+def _install_dataset_vocab_mapping(
+    cfg: Config,
+    bundle: ModelBundle,
+    *,
+    counts: Counter,
+    dataset_identity: str,
+) -> None:
+    """Build, cache, and install one deterministic EAGLE vocabulary map."""
+    if (
+        cfg.model.vocab_mapping_path
+        or bundle.draft_vocab_size == bundle.target_vocab_size
+    ):
+        return
+
+    key = hashlib.sha256(
+        (
+            f"{dataset_identity}:{bundle.target_vocab_size}:"
+            f"{bundle.draft_vocab_size}"
+        ).encode()
+    ).hexdigest()
+    directory = os.path.join(cfg.data.cache_dir, "vocab_mapping")
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f"{key}.pt")
+    if os.path.exists(path):
+        bundle.draft_model.load_vocab_mapping(path)
+        return
+
+    import torch
+
+    from specforge.data.preprocessing import process_token_dict_to_mappings
+
+    d2t, t2d = process_token_dict_to_mappings(
+        counts,
+        bundle.draft_vocab_size,
+        bundle.target_vocab_size,
+    )
+
+    # Every rank derives the same mapping and installs it directly, so training
+    # does not depend on a shared cache filesystem. Rank 0 alone persists the
+    # reusable cache file, avoiding concurrent torch.save writes.
+    bundle.draft_model.d2t.copy_(d2t)
+    bundle.draft_model.t2d.copy_(t2d)
+    bundle.draft_model.vocab_mapping_loaded = True
+    distributed = (
+        torch.distributed.is_available() and torch.distributed.is_initialized()
+    )
+    if not distributed or torch.distributed.get_rank() == 0:
+        temporary = f"{path}.{os.getpid()}.tmp"
+        torch.save({"d2t": d2t, "t2d": t2d}, temporary)
+        os.replace(temporary, path)
+
+def _ensure_offline_vocab_mapping(
+    cfg: Config,
+    bundle: ModelBundle,
+    algorithm: AlgorithmRegistration,
+) -> None:
+    """Derive a local-offline map from the exact feature ids and loss masks."""
+    if FeatureMode.OFFLINE not in algorithm.providers.vocab_mapping_modes:
+        return
+    if (
+        cfg.model.vocab_mapping_path
+        or bundle.draft_vocab_size == bundle.target_vocab_size
+    ):
+        return
+
+    from specforge.runtime.data_plane.offline_reader import list_feature_files
+    from specforge.training.vocab_mapping import count_effective_feature_tokens
+
+    identity_parts = []
+    for path in list_feature_files(cfg.data.hidden_states_path):
+        stat = os.stat(path)
+        identity_parts.append((os.path.abspath(path), stat.st_size, stat.st_mtime_ns))
+    identity = json.dumps(
+        {
+            "kind": "offline-features-v1",
+            "files": identity_parts,
+            "max_length": cfg.data.max_length,
+        },
+        sort_keys=True,
+    )
+    counts = count_effective_feature_tokens(
+        cfg.data.hidden_states_path,
+        max_length=cfg.data.max_length,
+        target_vocab_size=bundle.target_vocab_size,
+    )
+    _install_dataset_vocab_mapping(
+        cfg,
+        bundle,
+        counts=counts,
+        dataset_identity=identity,
+    )

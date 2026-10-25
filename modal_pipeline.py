@@ -1,236 +1,288 @@
-"""
-Modal.com Serverless Pipeline for Qwen2.5-7B EAGLE-3.1 Speculator Training
-Framework: sgl-project/SpecForge
-Quy trình 3 bước tinh gọn:
-- Nạp tự động configs/ và data/processed/ (ShareGPT JSONL)
-- Huấn luyện unroll autoregressive với FlashAttention trên GPU NVIDIA A100-80GB
-- Checkpoint tự động commit vào Modal Persistent Volume (/vol)
-- Tự động đồng bộ Weights & Biases (WandB) và upload Hugging Face Hub
-"""
-
-import os
-import sys
+"""Modal-only M3-04 runtime. Default entrypoint is the CPU plan gate."""
+import json
+import subprocess
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import modal
 
-# Khắc phục lỗi mã hóa ký tự Unicode charmap trên console Windows
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+from training.train import (
+    BEST_METRIC, REPO_ROOT, SPECFORGE_SHA, feature_counts, feature_paths,
+    feature_selection, load_training_config,
+    resolved_config, sha256_file, verify_runtime, write_config,
+)
 
-# 1. Định nghĩa Persistent Storage Volume trên Modal Cloud
-volume = modal.Volume.from_name("qwen-eagle3-volume", create_if_missing=True)
-
-# 2. Xây dựng Container Image với SpecForge, SGLang và PyTorch
+volume = modal.Volume.from_name("qwen-eagle3-volume", create_if_missing=False)
 app_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git")
-    .env({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
-    .pip_install(
-        "torch>=2.4.0",
-        "transformers>=4.45.0",
-        "accelerate>=0.34.0",
-        "safetensors>=0.4.4",
-        "datasets>=2.20.0",
-        "pyyaml>=6.0.2",
-        "tqdm>=4.66.5",
-        "huggingface_hub>=0.24.0",
-        "wandb>=0.16.0",
-        "sglang[all]",
-        "git+https://github.com/sgl-project/SpecForge.git",
+    modal.Image.from_registry("nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04", add_python="3.11")
+    .entrypoint([])
+    .apt_install("git", "build-essential", "ninja-build")
+    .env({
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "HF_HOME": "/vol/hf-cache",
+        "CUDA_HOME": "/usr/local/cuda",
+        "PATH": "/usr/local/cuda/bin:/usr/local/cuda/nvvm/bin:/usr/local/nvidia/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    })
+    .run_commands(
+        "git init /opt/SpecForge",
+        f"git -C /opt/SpecForge fetch --depth=1 https://github.com/sgl-project/SpecForge.git {SPECFORGE_SHA}",
+        f"git -C /opt/SpecForge checkout --detach {SPECFORGE_SHA}",
     )
-    .add_local_python_source("training", "data", "export")
+    .pip_install("/opt/SpecForge")
+    .run_commands("python -m pip freeze > /opt/specforge-runtime.freeze.txt")
+    .add_local_python_source("training")
+    # Explicit files: never upload data/raw or local processed datasets.
+    .add_local_file("data/__init__.py", "/root/data/__init__.py")
+    .add_local_file("data/prepare_specforge.py", "/root/data/prepare_specforge.py")
     .add_local_dir("configs", remote_path="/root/configs")
 )
-
-# Nạp dữ liệu processed và MODEL_CARD.md nếu có sẵn ở local
-local_processed_dir = Path("data/processed")
-if local_processed_dir.exists():
-    app_image = app_image.add_local_dir(
-        str(local_processed_dir),
-        remote_path="/root/data/processed",
-    )
-
-local_model_card = Path("MODEL_CARD.md")
-if local_model_card.exists():
-    app_image = app_image.add_local_file(
-        str(local_model_card),
-        remote_path="/root/MODEL_CARD.md",
-    )
-
 app = modal.App("qwen2-5-eagle3.1-speculator", image=app_image)
+wandb_secret = modal.Secret.from_name("wandb-secret", required_keys=["WANDB_API_KEY"])
+SMOKE_FEATURE_ROOT = Path("/vol/hidden_states/m3-04/smoke")
 
 
-# ------------------------------------------------------------------------------
-# Function 1: Huấn luyện với SpecForge trên NVIDIA A100-80GB
-# ------------------------------------------------------------------------------
-@app.function(
-    gpu="A100-80GB",
-    timeout=21600,  # 6.0 giờ tối đa (khớp Cost Ceiling Guard)
-    volumes={"/vol": volume},
-    secrets=[
-        modal.Secret.from_name("my-huggingface-secret"),
-        modal.Secret.from_name("wandb-secret"),
-    ],
-)
-def train_specforge(
-    epochs: Optional[int] = None,
-    batch_size: Optional[int] = None,
-    resume: bool = False,
-    test_mode: bool = False,
-    dry_run: bool = False,
-) -> str:
-    import yaml
+def execution_source():
+    root = str(REPO_ROOT)
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", f"safe.directory={root}", "-C", root, *args], text=True
+        ).strip()
+    files = ["modal_pipeline.py", "requirements.txt"] + [
+        str(p.relative_to(REPO_ROOT)).replace("\\", "/")
+        for folder in ("training", "configs")
+        for p in (REPO_ROOT / folder).glob("*") if p.is_file()
+    ] + ["data/prepare_specforge.py"]
+    return {
+        "head": git("rev-parse", "HEAD"), "branch": git("branch", "--show-current"),
+        "working_tree": git("status", "--short"),
+        "source_sha256": {p: sha256_file(REPO_ROOT / p) for p in sorted(files)},
+    }
+
+
+def save_json(path, value):
+    with Path(path).open("x", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True, ensure_ascii=False)
+
+
+def feature_inventory(directory):
+    files = sorted(Path(directory).rglob("*.ckpt"))
+    return [
+        {"path": str(p.relative_to(directory)), "bytes": p.stat().st_size, "sha256": sha256_file(p)}
+        for p in files
+    ]
+
+
+def check_features(payload):
+    counts = feature_counts(payload["contract"])
+    smoke = payload["contract"].get("feature_scope") == "smoke"
+    for split, field in (("train", "hidden_states_path"), ("val", "eval_hidden_states_path")):
+        label = "eval" if split == "val" else split
+        directory = Path(payload["config"]["data"][field])
+        if smoke != directory.is_relative_to(SMOKE_FEATURE_ROOT):
+            raise ValueError("Feature namespace does not match scope")
+        manifest = json.loads((directory / "artifact_manifest.json").read_text())
+        if manifest["contract"] != payload["contract"] or manifest["capture_layers"] != payload["capture_layers"]:
+            raise ValueError("Feature contract mismatch")
+        if len(manifest["files"]) != counts[label]:
+            raise ValueError("Feature sample count mismatch")
+        if smoke and (
+            manifest.get("raw_counts") != {s: payload["contract"]["raw"][s]["rows"] for s in ("train", "val")}
+            or manifest.get("selected_counts") != counts
+            or manifest.get("produced_counts") != {label: counts[label]}
+        ):
+            raise ValueError("Smoke manifest count metadata mismatch")
+        if feature_inventory(directory) != manifest["files"]:
+            raise ValueError("Feature contents changed")
+
+
+@app.function(volumes={"/vol": volume}, secrets=[wandb_secret], timeout=7200)
+def preflight(mode="plan", execution=None, feature_scope="full", train_samples=None, eval_samples=None):
+    """CPU only: resolve real upstream config/capture and inspect the immutable Volume."""
+    from huggingface_hub import snapshot_download
+    from transformers import AutoConfig, AutoTokenizer
+    from specforge.application import resolve_offline_capture
+    from specforge.config import Config
+    from data.prepare_specforge import audit_prepared, prepare_file, validate_raw
+
+    volume.reload()
+    versions = verify_runtime(check_toolchain=True)
+    cfg = load_training_config("/root/configs/train_config.yaml")
+    target_id = cfg["model"]["target_model_path"]
+    target = AutoConfig.from_pretrained(target_id)
+    revision = target._commit_hash
+    if not revision:
+        raise ValueError("Cannot resolve immutable target revision")
+    snapshot = snapshot_download(
+        target_id, revision=revision,
+        allow_patterns=["config.json", "tokenizer*", "vocab.json", "merges.txt", "special_tokens_map.json", "generation_config.json"],
+    )
+    cfg["model"]["target_model_path"] = snapshot
+    resolved = resolve_offline_capture(Config.model_validate(cfg), target_config=target)
+    cfg, key, contract = feature_paths(
+        cfg, cfg["model"]["draft_model_config"], feature_scope=feature_scope,
+        train_samples=train_samples, eval_samples=eval_samples,
+        target_revision=revision, capture_layers=resolved.capture_layers,
+    )
+    draft = resolved.draft_config.to_dict()
+    if not draft.get("fc_norm") or not draft.get("norm_output") or draft["num_hidden_layers"] != 1:
+        raise ValueError("EAGLE-3.1 draft invariant failed")
+    if len(resolved.capture_layers) != 3:
+        raise ValueError("Expected canonical three-layer capture")
+    manifest = json.loads(Path("/root/configs/m3_04_dataset.json").read_text())
+    raw_root = Path(manifest["raw_root"])
+    raw = {split: validate_raw(raw_root / (split + ".jsonl"), expected)
+           for split, expected in manifest["splits"].items()}
+    tokenizer = AutoTokenizer.from_pretrained(snapshot)
+    prepared_audit = {
+        split: audit_prepared(raw_root / (split + ".jsonl"), tokenizer, expected)
+        for split, expected in manifest["splits"].items()
+    }
+    evidence = Path("/vol/runs/m3-04") / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
+    evidence.mkdir(parents=True, exist_ok=False)
+    config_path = write_config(cfg, evidence / "resolved.yaml")
+    payload = {
+        "config": cfg, "config_path": str(config_path), "config_sha256": sha256_file(config_path),
+        "contract": contract, "artifact_key": key, "capture_layers": list(resolved.capture_layers),
+        "resolved_draft": draft, "versions": versions, "execution": execution,
+        "target_revision": revision, "target_id": target_id, "raw": raw,
+        "prepared_audit": prepared_audit,
+        "best_metric": BEST_METRIC, "evidence": str(evidence),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "modal_function_call_id": modal.current_function_call_id(),
+    }
+    try:
+        (evidence / "runtime.freeze.txt").write_text(Path("/opt/specforge-runtime.freeze.txt").read_text(), encoding="utf-8")
+        if mode == "prepare":
+            processed = Path("/vol/datasets/m3-04/processed") / key
+            processed.mkdir(parents=True, exist_ok=True)
+            prepared_manifest = processed / "prepared_manifest.json"
+            if prepared_manifest.exists():
+                prepared = json.loads(prepared_manifest.read_text())
+                if prepared["contract"] != contract:
+                    raise ValueError("Prepared contract mismatch")
+                for split, item in prepared["splits"].items():
+                    if item != prepared_audit[split] or sha256_file(processed / (split + ".jsonl")) != item["prepared_sha256"]:
+                        raise ValueError("Prepared data changed")
+            else:
+                prepared = {"contract": contract, "splits": {}}
+                for split, expected in manifest["splits"].items():
+                    prepared["splits"][split] = prepare_file(
+                        raw_root / (split + ".jsonl"), processed / (split + ".jsonl"),
+                        tokenizer, expected, raw_root=raw_root,
+                    )
+                    if prepared["splits"][split] != prepared_audit[split]:
+                        raise ValueError("Prepared serialization differs from CPU audit")
+                save_json(prepared_manifest, prepared)
+            # Download exact weights on remote CPU before paying for capture GPU.
+            snapshot_download(target_id, revision=revision)
+            payload["prepared"] = prepared
+        elif mode == "features":
+            check_features(payload)
+        elif mode != "plan":
+            raise ValueError("Unknown preflight mode")
+        result = subprocess.run(
+            ["specforge", "train", "-c", str(config_path), "--plan"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        (evidence / "plan.log").write_text(result.stdout, encoding="utf-8")
+        print(result.stdout)
+        result.check_returncode()
+        payload["status"] = "CPU_PLAN_PASS"
+        save_json(evidence / "evidence.json", payload)
+        return payload
+    finally:
+        volume.commit()
+
+
+@app.function(gpu="A100-80GB", volumes={"/vol": volume}, timeout=21600)
+def prepare_hidden_states(payload):
+    """Future GPU operation; canonical extraction, train and validation only."""
+    verify_runtime(check_toolchain=True)
+    volume.reload()
+    cfg = payload["config"]
+    counts = feature_counts(payload["contract"])
+    smoke = payload["contract"].get("feature_scope") == "smoke"
+    processed = Path("/vol/datasets/m3-04/processed") / payload["artifact_key"]
+    try:
+        for split, field in (("train", "hidden_states_path"), ("val", "eval_hidden_states_path")):
+            output = Path(cfg["data"][field])
+            output.mkdir(parents=True, exist_ok=False)
+            command = [
+                "torchrun", "--standalone", "--nproc_per_node=1", "-m", "training.prepare",
+                "--config", payload["config_path"],
+                "--source", str(processed / (split + ".jsonl")), "--output", str(output),
+            ]
+            label = "eval" if split == "val" else split
+            if smoke:
+                command.extend(["--num-samples", str(counts[label])])
+            subprocess.run(command, check=True)
+            inventory = feature_inventory(output)
+            if len(inventory) != counts[label]:
+                raise ValueError("Canonical extraction count differs from selected count")
+            manifest = {
+                "contract": payload["contract"], "capture_layers": payload["capture_layers"],
+                "files": inventory, "target_revision": payload["target_revision"],
+            }
+            if smoke:
+                manifest.update(
+                    raw_counts={s: payload["contract"]["raw"][s]["rows"] for s in ("train", "val")},
+                    selected_counts=counts, produced_counts={label: len(inventory)},
+                )
+            save_json(output / "artifact_manifest.json", manifest)
+    finally:
+        volume.commit()
+
+
+@app.function(gpu="A100-80GB", volumes={"/vol": volume}, secrets=[wandb_secret], timeout=21600)
+def train_specforge(payload, smoke=False, resume=False):
+    import torch
     from training.train import run_specforge_training
-
-    print("=" * 70)
-    print(">>> [MODAL] Bắt đầu khởi chạy SpecForge Training trên NVIDIA A100-80GB")
-    print("=" * 70)
-
+    verify_runtime(check_toolchain=True)
+    volume.reload()
+    if smoke != (payload["contract"].get("feature_scope") == "smoke"):
+        raise ValueError("Training mode and feature scope differ")
+    cfg = resolved_config(payload["config"], smoke=smoke, run_suffix=uuid.uuid4().hex[:10], resume=resume)
+    output = Path(cfg["output_dir"])
+    latest = output / (cfg["run_id"] + "-latest")
+    existing = latest.exists() or latest.is_symlink() or any(output.glob(cfg["run_id"] + "-step*")) or (output / (cfg["run_id"] + ".best_meta.json")).exists()
+    if existing and not resume:
+        raise FileExistsError("Run exists; use explicit --resume or a new run_id")
+    if resume and not latest.exists():
+        raise FileNotFoundError("Requested resume checkpoint is absent")
+    evidence = Path(payload["evidence"])
+    cfg["tracking"]["wandb_dir"] = str(evidence / "wandb")
+    Path(cfg["tracking"]["wandb_dir"]).mkdir(exist_ok=False)
+    path = write_config(cfg, evidence / "execution.yaml")
+    save_json(evidence / "execution.json", {
+        **payload, "config": cfg, "config_sha256": sha256_file(path),
+        "gpu": torch.cuda.get_device_name(0), "cuda": torch.version.cuda,
+        "modal_function_call_id": modal.current_function_call_id(),
+        "checkpoint_latest": str(latest),
+        "checkpoint_best": str(output / (cfg["run_id"] + "-best")),
+    })
     try:
-        volume.reload()
-    except Exception:
-        pass
-
-    config_path = "/root/configs/train_config.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-
-    # Định tuyến đường dẫn đầu ra và dữ liệu trên Modal Volume
-    vol_output_dir = Path("/vol/checkpoints/qwen2.5-7b-eagle3.1")
-    vol_output_dir.mkdir(parents=True, exist_ok=True)
-    cfg["output_dir"] = str(vol_output_dir)
-
-    if Path("/root/data/processed/train.jsonl").exists():
-        cfg["train_data_path"] = "/root/data/processed/train.jsonl"
-    if Path("/root/data/processed/val.jsonl").exists():
-        cfg["val_data_path"] = "/root/data/processed/val.jsonl"
-
-    if epochs is not None:
-        cfg["num_epochs"] = epochs
-    if batch_size is not None:
-        cfg["batch_size"] = batch_size
-
-    if test_mode:
-        print("[TEST MODE] Cấu hình chạy nhanh 1 epoch, unroll 3 bước để kiểm thử môi trường...")
-        cfg["num_epochs"] = 1
-        cfg["ttt_length"] = 3
-
-    # Lưu tạm cấu hình đã cập nhật
-    temp_config = "/tmp/modal_train_config.yaml"
-    with open(temp_config, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f)
-
-    cmd = run_specforge_training(
-        config_path=temp_config,
-        num_gpus=1,
-        resume=resume,
-        dry_run=dry_run,
-    )
-
-    volume.commit()
-    print(">>> [MODAL] Đã commit toàn bộ checkpoint vào Modal Volume (/vol) thành công!")
-    return str(vol_output_dir)
+        run_specforge_training(path)
+    finally:
+        volume.commit()
 
 
-# ------------------------------------------------------------------------------
-# Function 2: Đóng gói và upload lên Hugging Face Hub (Chạy CPU container)
-# ------------------------------------------------------------------------------
-@app.function(
-    volumes={"/vol": volume},
-    secrets=[modal.Secret.from_name("my-huggingface-secret", required_keys=["HF_TOKEN"])],
-    timeout=1800,
-)
-def export_and_upload(
-    repo_id: str = "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator",
-    dry_run: bool = False,
-) -> str:
-    from export.package_and_upload import (
-        attach_model_card,
-        upload_to_huggingface,
-        verify_package_integrity,
-    )
-
-    try:
-        volume.reload()
-    except Exception:
-        pass
-
-    export_dir = Path("/vol/checkpoints/qwen2.5-7b-eagle3.1")
-    best_dir = export_dir / "best"
-    target_dir = str(best_dir if best_dir.exists() else export_dir)
-
-    print(f">>> [MODAL] Xác thực tính toàn vẹn của checkpoint tại: {target_dir}")
-    if not verify_package_integrity(target_dir):
-        print(f"[CẢNH BÁO] Chưa tìm thấy checkpoint đầy đủ tại {target_dir}.")
-
-    # Đính kèm Model Card nếu có
-    model_card = "/root/MODEL_CARD.md"
-    if Path(model_card).exists():
-        attach_model_card(target_dir, model_card)
-
-    print(f">>> [MODAL] Tải checkpoint lên Hugging Face Hub: {repo_id}")
-    upload_to_huggingface(
-        export_dir=target_dir,
-        repo_id=repo_id,
-        dry_run=dry_run,
-    )
-
-    volume.commit()
-    print(f">>> [MODAL] Hoàn tất upload lên: https://huggingface.co/{repo_id}")
-    return repo_id
-
-
-# ------------------------------------------------------------------------------
-# Entrypoint chạy từ Terminal: modal run modal_pipeline.py [--step test|train|export|all]
-# ------------------------------------------------------------------------------
 @app.local_entrypoint()
-def main(
-    step: str = "train",
-    repo_id: str = "theflyingkhui04/qwen2.5-7b-eagle3.1-speculator",
-    epochs: Optional[int] = None,
-    batch_size: Optional[int] = None,
-    resume: bool = False,
-    dry_run: bool = False,
-):
-    print("=" * 70)
-    print(">>> [MODAL] Khởi chạy EAGLE-3.1 SpecForge Pipeline trên Modal.com")
-    print(f"Bước thực hiện (Step): {step.upper()} | Resume: {resume} | Dry-run: {dry_run}")
-    print("=" * 70)
-
-    if step == "test":
-        print(">>> [TEST RUN] Kiểm thử nhanh môi trường huấn luyện SpecForge (1 epoch)...")
-        train_specforge.remote(test_mode=True, dry_run=dry_run)
-        print(">>> [SUCCESS] Test run hoàn tất thành công!")
-
-    elif step == "train":
-        print(">>> [STEP: TRAIN] Huấn luyện đầu nháp EAGLE-3.1 với SpecForge trên A100-80GB...")
-        train_specforge.remote(
-            epochs=epochs,
-            batch_size=batch_size,
-            resume=resume,
-            dry_run=dry_run,
-        )
-
-    elif step == "export":
-        print(f">>> [STEP: EXPORT] Đóng gói và upload lên Hugging Face ({repo_id})...")
-        export_and_upload.remote(repo_id=repo_id, dry_run=dry_run)
-
-    elif step == "all":
-        print(">>> [STEP: ALL] Chạy liên tục Huấn luyện -> Đóng gói & Upload...")
-        train_specforge.remote(
-            epochs=epochs,
-            batch_size=batch_size,
-            resume=resume,
-            dry_run=dry_run,
-        )
-        export_and_upload.remote(repo_id=repo_id, dry_run=dry_run)
-        print(">>> [SUCCESS] HOÀN TẤT TOÀN BỘ PIPELINE HUẤN LUYỆN TRÊN MODAL.COM!")
-
+def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
+         train_samples: int | None = None, eval_samples: int | None = None):
+    if step not in {"plan", "dataset_check", "prepare_hidden_states", "smoke", "train"}:
+        raise ValueError("Choose plan, dataset_check, prepare_hidden_states, smoke, train")
+    scope = feature_scope or ("smoke" if step == "smoke" else "full")
+    if (step == "smoke" and scope != "smoke") or (step == "train" and scope != "full"):
+        raise ValueError("Smoke training requires smoke scope; full training requires full scope")
+    feature_selection(scope, train_samples, eval_samples)
+    options = {"feature_scope": scope, "train_samples": train_samples, "eval_samples": eval_samples}
+    execution = execution_source()
+    if step in {"plan", "dataset_check"}:
+        result = preflight.remote(mode="plan", execution=execution, **options)
+        print(json.dumps({"status": result["status"], "evidence": result["evidence"], "capture_layers": result["capture_layers"]}))
+    elif step == "prepare_hidden_states":
+        result = preflight.remote(mode="prepare", execution=execution, **options)
+        prepare_hidden_states.remote(result)
     else:
-        print(f"❌ Lỗi: Bước không hợp lệ '{step}'. Vui lòng chọn: test, train, export, all.")
+        result = preflight.remote(mode="features", execution=execution, **options)
+        train_specforge.remote(result, smoke=step == "smoke", resume=resume)

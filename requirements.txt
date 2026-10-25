@@ -1,14 +1,4 @@
-torch>=2.4.0
-transformers>=4.45.0
-accelerate>=0.34.0
-sglang[all]
-git+https://github.com/sgl-project/SpecForge.git
-datasets>=2.20.0
-pyyaml>=6.0.2
+# Linux training dependencies owned by SpecForge: torch, transformers, sglang, wandb.
+git+https://github.com/sgl-project/SpecForge.git@fddcb4ad37733a821708170df28cac2f7bb6ea05
+modal==1.6.2
 pytest>=8.0.0
-safetensors>=0.4.4
-huggingface_hub>=0.24.0
-tqdm>=4.66.5
-numpy>=1.26.0
-wandb>=0.16.0
-modal>=1.6.0

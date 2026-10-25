@@ -1,0 +1,18 @@
+{
+  "volume": "qwen-eagle3-volume",
+  "raw_root": "/vol/datasets/m3-04/raw/m3_04_drive",
+  "splits": {
+    "train": {
+      "rows": 40000,
+      "sha256": "075592a4f9ae92cf942eb767dcd6bf208326ef2732fa5f10915d8795b724f7ca"
+    },
+    "val": {
+      "rows": 3000,
+      "sha256": "86d77222894abbb6e92f9e5ea1b22350f24531ea31a75fbf17258634355e331b"
+    },
+    "test": {
+      "rows": 2000,
+      "sha256": "8859387d789314f8e97ee21436e725a6ab8aef9570e9df422d4a7251d3240ff9"
+    }
+  }
+}

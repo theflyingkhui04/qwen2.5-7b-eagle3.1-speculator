@@ -3,274 +3,106 @@ from unittest.mock import patch
 import pytest
 
 from training.train import (
-    build_specforge_command,
-    find_best_checkpoint,
-    find_latest_checkpoint,
-    find_resume_checkpoint,
-    load_training_config,
-    parse_training_args,
-    prune_old_checkpoints,
-    run_specforge_training,
-    setup_wandb_metrics,
+    SPECFORGE_SHA, BEST_METRIC, build_specforge_command, load_training_config,
+    resolved_config, feature_counts, feature_paths, feature_selection,
+    run_specforge_training, write_config,
 )
 
-
-def test_parse_training_args_defaults():
-    args = parse_training_args(["--config", "configs/train_config.yaml", "--gpus", "1"])
-    assert args.config == "configs/train_config.yaml"
-    assert args.gpus == 1
-    assert args.dry_run is False
-    assert args.resume is False
-    assert args.checkpoint_path is None
-    assert args.wandb is False
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_parse_training_args_custom():
-    args = parse_training_args([
-        "--config", "custom.yaml",
-        "--gpus", "4",
-        "--resume",
-        "--checkpoint-path", "checkpoints/best",
-        "--wandb",
-        "--dry-run",
-    ])
-    assert args.config == "custom.yaml"
-    assert args.gpus == 4
-    assert args.resume is True
-    assert args.checkpoint_path == "checkpoints/best"
-    assert args.wandb is True
-    assert args.dry_run is True
+def test_unified_entry_and_plan():
+    assert build_specforge_command("resolved.yaml") == ["specforge", "train", "-c", "resolved.yaml"]
+    assert build_specforge_command("resolved.yaml", plan=True)[-1] == "--plan"
+    assert BEST_METRIC == "eval/simulated_acc_len"
 
 
-def test_find_latest_checkpoint_empty_or_nonexistent(tmp_path):
-    assert find_latest_checkpoint(tmp_path / "nonexistent") is None
-    assert find_latest_checkpoint(tmp_path) is None
+def test_dry_run_never_executes():
+    with patch("training.train.subprocess.run") as run:
+        assert run_specforge_training("x.yaml", dry_run=True)[0] == "specforge"
+        run.assert_not_called()
 
 
-def test_find_latest_checkpoint_subdirectories(tmp_path):
-    (tmp_path / "checkpoint-500").mkdir()
-    (tmp_path / "checkpoint-1500").mkdir()
-    (tmp_path / "checkpoint-1000").mkdir()
-    latest = find_latest_checkpoint(tmp_path)
-    assert latest is not None
-    assert latest.name == "checkpoint-1500"
+def test_windows_cannot_launch_training():
+    with patch("training.train.sys.platform", "win32"), pytest.raises(RuntimeError, match="Modal Linux"):
+        run_specforge_training("x.yaml")
 
 
-def test_find_latest_checkpoint_files(tmp_path):
-    (tmp_path / "checkpoint_epoch_1.pt").write_text("chk1")
-    (tmp_path / "checkpoint_epoch_3.pt").write_text("chk3")
-    (tmp_path / "checkpoint_epoch_2.pt").write_text("chk2")
-    latest = find_latest_checkpoint(tmp_path)
-    assert latest is not None
-    assert latest.name == "checkpoint_epoch_3.pt"
+def test_smoke_changes_only_scale_and_run_identity():
+    cfg = load_training_config()
+    smoke = resolved_config(cfg, smoke=True, run_suffix="unique")
+    assert cfg["run_id"] != smoke["run_id"]
+    assert smoke["training"]["max_steps"] == 2
+    for field in ("ttt_length", "num_epochs", "batch_size", "accumulation_steps", "learning_rate", "strategy"):
+        assert smoke["training"][field] == cfg["training"][field]
+    assert smoke["model"] == cfg["model"]
+    assert smoke["data"] == cfg["data"]
+    assert smoke["training"]["eval_interval"] == 1
+    assert smoke["tracking"]["wandb_project"] == cfg["tracking"]["wandb_project"]
 
 
-def test_build_specforge_command():
-    cfg = {
-        "target_model_path": "Qwen/Qwen2.5-7B-Instruct",
-        "draft_model_config": "configs/eagle3.1_qwen2.5_7b.json",
-        "train_data_path": "data/processed/train.jsonl",
-        "output_dir": "checkpoints/qwen2.5-7b-eagle3.1",
-        "num_epochs": 3,
-        "batch_size": 2,
-        "gradient_accumulation_steps": 4,
-        "learning_rate": 1e-4,
-        "max_seq_len": 2048,
-        "ttt_length": 5,
-        "tp_size": 1,
-    }
-    cmd = build_specforge_command(cfg, num_gpus=2)
-    assert cmd[0] == "torchrun"
-    assert "--nproc_per_node=2" in cmd
-    assert "-m" in cmd
-    assert "specforge.train" in cmd
-    assert "--model-path" in cmd
-    assert "Qwen/Qwen2.5-7B-Instruct" in cmd
-    assert "--draft-config" in cmd
-    assert "configs/eagle3.1_qwen2.5_7b.json" in cmd
-    assert "--data-path" in cmd
-    assert "data/processed/train.jsonl" in cmd
-    assert "--output-dir" in cmd
-    assert "checkpoints/qwen2.5-7b-eagle3.1" in cmd
-    assert "--num-epochs" in cmd
-    assert "3" in cmd
-    assert "--micro-batch-size" in cmd
-    assert "2" in cmd
-    assert "--grad-accum-steps" in cmd
-    assert "4" in cmd
-    assert "--lr" in cmd
-    assert "0.0001" in cmd or "1e-04" in cmd or "0.0001" in str(cfg["learning_rate"])
-    assert "--max-seq-len" in cmd
-    assert "2048" in cmd
-    assert "--ttt-length" in cmd
-    assert "5" in cmd
-    assert "--tp-size" in cmd
-    assert "1" in cmd
+def test_resume_is_full_resume_not_warm_start():
+    cfg = resolved_config(load_training_config(), resume=True)
+    assert cfg["training"]["resume_from"].endswith(cfg["run_id"] + "-latest")
+    assert "draft_checkpoint_path" not in cfg["model"]
 
 
-def test_build_specforge_command_with_wandb_and_save_interval():
-    cfg = {
-        "target_model_path": "Qwen/Qwen2.5-7B-Instruct",
-        "draft_model_config": "configs/eagle3.1_qwen2.5_7b.json",
-        "train_data_path": "data/processed/train.jsonl",
-        "output_dir": "checkpoints/qwen2.5-7b-eagle3.1",
-        "save_interval": 1,
-        "wandb": {
-            "enabled": True,
-            "project": "qwen2.5-eagle3.1",
-            "run_name": "test-run",
-        },
-    }
-    cmd = build_specforge_command(cfg, num_gpus=1)
-    assert "--save-interval" in cmd
-    assert "1" in cmd
-    assert "--report-to" in cmd
-    assert "wandb" in cmd
-    assert "--wandb-project" in cmd
-    assert "qwen2.5-eagle3.1" in cmd
-    assert "--wandb-name" in cmd
-    assert "test-run" in cmd
+def test_smoke_requires_unique_identity():
+    with pytest.raises(ValueError):
+        resolved_config(load_training_config(), smoke=True)
 
 
-def test_build_specforge_command_with_resume(tmp_path):
-    chk_dir = tmp_path / "checkpoints"
-    chk_dir.mkdir()
-    (chk_dir / "checkpoint-2000").mkdir()
-
-    cfg = {
-        "target_model_path": "Qwen/Qwen2.5-7B-Instruct",
-        "draft_model_config": "configs/eagle3.1_qwen2.5_7b.json",
-        "train_data_path": "data/processed/train.jsonl",
-        "output_dir": str(chk_dir),
-    }
-
-    # Resume tự động tìm checkpoint
-    cmd = build_specforge_command(cfg, num_gpus=1, resume=True)
-    assert "--draft-checkpoint-path" in cmd
-    assert str(chk_dir / "checkpoint-2000") in cmd
-
-    # Truyền checkpoint cụ thể
-    cmd2 = build_specforge_command(cfg, num_gpus=1, checkpoint_path=str(chk_dir / "custom_checkpoint"))
-    assert "--draft-checkpoint-path" in cmd2
-    assert str(chk_dir / "custom_checkpoint") in cmd2
+def test_content_addressed_features_and_exclusive_config(tmp_path):
+    cfg = load_training_config()
+    draft = ROOT / "configs/eagle3.1_qwen2.5_7b.json"
+    resolved, key, contract = feature_paths(cfg, draft)
+    assert resolved["data"]["hidden_states_path"].endswith("/train/" + key)
+    assert resolved["data"]["eval_hidden_states_path"].endswith("/eval/" + key)
+    assert contract["specforge_sha"] == SPECFORGE_SHA
+    assert key == feature_paths(cfg, draft)[1]
+    path = write_config(resolved, tmp_path / "run.yaml")
+    assert load_training_config(path) == resolved
+    with pytest.raises(FileExistsError):
+        write_config(resolved, path)
 
 
-def test_run_specforge_training_dry_run():
-    root = Path(__file__).parent.parent
-    config_path = str(root / "configs" / "train_config.yaml")
-    cmd = run_specforge_training(config_path, num_gpus=1, dry_run=True)
-    assert cmd[0] == "torchrun"
-    assert "--nproc_per_node=1" in cmd
-    assert "-m" in cmd
-    assert "specforge.train" in cmd
-    assert "--model-path" in cmd
-    assert "Qwen/Qwen2.5-7B-Instruct" in cmd
+def test_no_duplicate_tracker_or_legacy_training_path():
+    source = (ROOT / "training/train.py").read_text()
+    assert "wandb.init" not in source
+    assert "specforge.train" not in source
+    assert "torchrun" not in source
 
 
-def test_run_specforge_training_executes_subprocess():
-    root = Path(__file__).parent.parent
-    config_path = str(root / "configs" / "train_config.yaml")
-    with patch("subprocess.run") as mock_subproc:
-        cmd = run_specforge_training(config_path, num_gpus=2, dry_run=False)
-        mock_subproc.assert_called_once_with(cmd, check=True)
-        assert "--nproc_per_node=2" in cmd
+def test_smoke_defaults_full_counts_and_separate_identity():
+    cfg = load_training_config()
+    draft = ROOT / "configs/eagle3.1_qwen2.5_7b.json"
+    full, full_key, full_contract = feature_paths(cfg, draft)
+    options = {"feature_scope": "smoke", "target_revision": "immutable-target", "capture_layers": [1, 13, 24]}
+    smoke, smoke_key, smoke_contract = feature_paths(cfg, draft, **options)
+    assert feature_selection("smoke") == {"train": 64, "eval": 16}
+    assert feature_counts(smoke_contract) == {"train": 64, "eval": 16}
+    assert feature_counts(full_contract) == {"train": 40000, "eval": 3000}
+    assert "feature_scope" not in full_contract  # Existing full identity semantics.
+    assert smoke_key != full_key
+    assert smoke["data"]["hidden_states_path"] == f"/vol/hidden_states/m3-04/smoke/{smoke_key}/train"
+    assert smoke["data"]["eval_hidden_states_path"] == f"/vol/hidden_states/m3-04/smoke/{smoke_key}/eval"
+    assert full["data"]["hidden_states_path"] == f"/vol/hidden_states/m3-04/train/{full_key}"
+    assert full["data"]["eval_hidden_states_path"] == f"/vol/hidden_states/m3-04/eval/{full_key}"
+    assert feature_paths(cfg, draft, **options)[1:] == (smoke_key, smoke_contract)
+    assert feature_paths(cfg, draft, train_samples=128, **options)[1] != smoke_key
+    assert feature_paths(cfg, draft, eval_samples=32, **options)[1] != smoke_key
+    assert smoke_contract["raw"]["train"]["rows"] == 40000
+    assert smoke_contract["raw"]["val"]["rows"] == 3000
+    assert smoke_contract["target_revision"] == "immutable-target"
+    assert smoke_contract["capture_contract"]["layers"] == [1, 13, 24]
+    for key in ("specforge_sha", "draft_sha256", "adapter_sha256", "loader_bridge_sha256", "max_length", "chat_template"):
+        assert smoke_contract[key] == full_contract[key]
 
 
-def test_setup_wandb_metrics_disabled():
-    cfg = {"wandb": {"enabled": False}}
-    assert setup_wandb_metrics(cfg) is False
-
-
-def test_setup_wandb_metrics_enabled():
-    import sys
-    from unittest.mock import MagicMock
-
-    cfg = {
-        "wandb": {
-            "enabled": True,
-            "project": "test-project",
-            "run_name": "test-run",
-        }
-    }
-    mock_run = MagicMock()
-    mock_run.id = "mock-run-id-123"
-
-    mock_wandb = MagicMock()
-    mock_wandb.init.return_value = mock_run
-
-    with patch.dict(sys.modules, {"wandb": mock_wandb}):
-        res = setup_wandb_metrics(cfg)
-        assert res is True
-        mock_wandb.init.assert_called_once_with(
-            project="test-project",
-            name="test-run",
-            resume="allow",
-            reinit=True,
-        )
-        metric_names = [call.args[0] for call in mock_run.define_metric.call_args_list]
-        assert "train/step" in metric_names
-        assert "train/*" in metric_names
-        assert "train/loss" in metric_names
-        assert "eval/loss" in metric_names
-        assert "acceptance/alpha_overall" in metric_names
-        assert "acceptance/alpha_step_1" in metric_names
-        mock_run.finish.assert_called_once()
-
-
-def test_find_best_checkpoint_directory_or_metadata(tmp_path):
-    assert find_best_checkpoint(tmp_path) is None
-
-    best_dir = tmp_path / "best"
-    best_dir.mkdir()
-    assert find_best_checkpoint(tmp_path) == best_dir
-
-    # Thử qua metadata file
-    meta_dir = tmp_path / "meta_test"
-    meta_dir.mkdir()
-    target_chk = meta_dir / "checkpoint-800"
-    target_chk.mkdir()
-    (meta_dir / "best_metric.json").write_text(f'{{"best_checkpoint_path": "{str(target_chk).replace("\\", "\\\\")}"}}')
-    assert find_best_checkpoint(meta_dir) == target_chk
-
-
-def test_find_resume_checkpoint_prefers_best(tmp_path):
-    (tmp_path / "checkpoint-500").mkdir()
-    (tmp_path / "checkpoint-1000").mkdir()
-    best_dir = tmp_path / "best"
-    best_dir.mkdir()
-
-    # Mặc định ưu tiên best
-    chosen_best = find_resume_checkpoint(tmp_path, prefer_best=True)
-    assert chosen_best == best_dir
-
-    # Nếu prefer_best=False thì lấy latest (checkpoint-1000)
-    chosen_latest = find_resume_checkpoint(tmp_path, prefer_best=False)
-    assert chosen_latest.name == "checkpoint-1000"
-
-
-def test_prune_old_checkpoints(tmp_path):
-    best_dir = tmp_path / "best"
-    best_dir.mkdir()
-    c1 = tmp_path / "checkpoint-100"
-    c2 = tmp_path / "checkpoint-200"
-    c3 = tmp_path / "checkpoint-300"
-    c4 = tmp_path / "checkpoint-400"
-    for c in [c1, c2, c3, c4]:
-        c.mkdir()
-
-    # Giới hạn giữ lại 2 checkpoint latest + luôn giữ best
-    deleted = prune_old_checkpoints(tmp_path, keep_limit=2)
-    assert len(deleted) == 2
-    deleted_names = [d.name for d in deleted]
-    assert "checkpoint-100" in deleted_names
-    assert "checkpoint-200" in deleted_names
-
-    # Checkpoint-300, 400 và best vẫn còn nguyên
-    assert best_dir.exists()
-    assert (tmp_path / "checkpoint-300").exists()
-    assert (tmp_path / "checkpoint-400").exists()
-    assert not (tmp_path / "checkpoint-100").exists()
-    assert not (tmp_path / "checkpoint-200").exists()
-
-
-
+@pytest.mark.parametrize("scope,train,eval_count", [
+    ("full", 64, 16), ("smoke", 0, 16), ("smoke", 64, -1),
+    ("smoke", 7, 16), ("smoke", 40008, 16), ("smoke", 64, 3001),
+])
+def test_invalid_feature_limits_fail_closed(scope, train, eval_count):
+    with pytest.raises(ValueError):
+        feature_selection(scope, train, eval_count)

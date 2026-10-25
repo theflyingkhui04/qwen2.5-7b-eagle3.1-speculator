@@ -1,18 +1,11 @@
-import pytest
 from pathlib import Path
 
 
-def test_run_all_script_safeguards():
-    root = Path(__file__).parent.parent
-    script_path = root / "run_all.sh"
-    assert script_path.exists(), "run_all.sh must exist"
-
-    content = script_path.read_text(encoding="utf-8")
-    assert "pipefail" in content
-    assert "disk" in content.lower()
-    assert "vastai stop instance" in content
-    assert "50" in content  # 50GB disk check
-    assert "prepare_hybrid_dataset.py" in content
-    assert "extract_hidden_states.py" not in content  # Loại bỏ trích xuất offline thủ công
-    assert "train.py" in content
-    assert "package_and_upload.py" in content
+def test_shell_entry_delegates_to_modal_cpu_plan_by_default():
+    text = (Path(__file__).resolve().parents[1] / "run_all.sh").read_text()
+    assert "set -euo pipefail" in text
+    assert '${1:-plan}' in text
+    assert 'exec modal run modal_pipeline.py --step "$step"' in text
+    assert "pip install" not in text
+    assert "prepare_hybrid_dataset.py" not in text
+    assert "--upload" not in text

@@ -17,23 +17,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def build_hf_config(base_config: Dict[str, Any], precision: str = "float16") -> Dict[str, Any]:
+def build_hf_config(base_config: Dict[str, Any], precision: str = "bfloat16") -> Dict[str, Any]:
     """
     Xây dựng config.json chuẩn Hugging Face cho vLLM / SGLang Speculative Decoding.
     """
     config = dict(base_config)
-    config["architectures"] = ["Eagle3_1Qwen2ForCausalLM", "EagleQwen2ForCausalLM"]
-    config["model_type"] = "eagle_qwen2"
-    config["eagle_version"] = "3.1"
-    config["torch_dtype"] = precision
-    config["hidden_size"] = config.get("hidden_size", 3584)
-    config["num_hidden_layers"] = config.get("num_hidden_layers", 1)
-    config["num_attention_heads"] = config.get("num_attention_heads", 28)
-    config["num_key_value_heads"] = config.get("num_key_value_heads", 4)
-    config["vocab_size"] = config.get("vocab_size", 152064)
-    config["target_layer"] = config.get("target_layer", 28)
-    config["use_fc_norm"] = config.get("use_fc_norm", True)
-    config["use_post_norm_feedback"] = config.get("use_post_norm_feedback", True)
+    if config.get("architectures") != ["LlamaForCausalLMEagle3"]:
+        raise ValueError("Export with native specforge export before packaging")
+    if precision != "bfloat16" or config.get("torch_dtype") != precision:
+        raise ValueError("Packaging must preserve native BF16 weights and config")
     return config
 
 
@@ -55,7 +47,7 @@ def verify_package_integrity(export_dir: Any) -> bool:
         with open(config_file, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         archs = cfg.get("architectures", [])
-        if "EagleQwen2ForCausalLM" not in archs and "Eagle3_1Qwen2ForCausalLM" not in archs:
+        if archs != ["LlamaForCausalLMEagle3"] or cfg.get("torch_dtype") != "bfloat16":
             return False
     except Exception:
         return False
@@ -107,8 +99,8 @@ def parse_export_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--precision",
         type=str,
-        default="float16",
-        choices=["float16", "bfloat16"],
+        default="bfloat16",
+        choices=["bfloat16"],
         help="Định dạng số thực",
     )
     parser.add_argument("--upload", action="store_true", help="Bật cờ upload lên Hugging Face Hub")
