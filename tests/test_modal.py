@@ -105,25 +105,115 @@ def test_invalid_step_cannot_fall_through_to_training(pipeline):
     module.train_specforge.remote.assert_not_called()
 
 
-def test_feature_manifest_detects_corruption(pipeline, tmp_path):
+@pytest.fixture
+def sealed_features(pipeline, tmp_path, monkeypatch):
+    from training.train import feature_paths, load_training_config
     module, _, _ = pipeline
-    paths = {}
-    contract = {"raw": {"train": {"rows": 1}, "val": {"rows": 1}}}
-    for split, field in (("train", "hidden_states_path"), ("val", "eval_hidden_states_path")):
-        folder = tmp_path / split
-        folder.mkdir()
-        (folder / "0.ckpt").write_bytes(b"feature")
-        paths[field] = str(folder)
-        (folder / "artifact_manifest.json").write_text(json.dumps({
-            "contract": contract, "capture_layers": [1, 13, 24],
-            "files": module.feature_inventory(folder),
-        }))
-    payload = {"contract": contract, "capture_layers": [1, 13, 24], "config": {"data": paths}}
+    module.FEATURE_ROOT = tmp_path / "features"
+    module.SMOKE_FEATURE_ROOT = module.FEATURE_ROOT / "smoke"
+
+    def make(smoke=False):
+        cfg, key, contract = feature_paths(
+            load_training_config(), ROOT / "configs/eagle3.1_qwen2.5_7b.json",
+            feature_scope="smoke" if smoke else "full",
+            target_revision="pinned", capture_layers=[1, 13, 24],
+        )
+        counts = module.feature_counts(contract)
+        observed = {}
+        for label, field in (("train", "hidden_states_path"), ("eval", "eval_hidden_states_path")):
+            directory = (module.SMOKE_FEATURE_ROOT / key / label if smoke
+                         else module.FEATURE_ROOT / label / key)
+            directory.mkdir(parents=True)
+            cfg["data"][field] = str(directory)
+            files = [{"path": f"{i:05d}.ckpt", "bytes": 7, "sha256": "a" * 64}
+                     for i in range(counts[label])]
+            observed[directory] = [{"path": f["path"], "bytes": f["bytes"]} for f in files]
+            manifest = {"contract": contract, "capture_layers": [1, 13, 24],
+                        "target_revision": "pinned", "files": files}
+            if smoke:
+                manifest.update(raw_counts={"train": 40000, "val": 3000},
+                                selected_counts=counts, produced_counts={label: counts[label]})
+            (directory / "artifact_manifest.json").write_text(json.dumps(manifest))
+        monkeypatch.setattr(module, "feature_metadata", lambda directory: observed[directory])
+        payload = {"contract": contract, "config": cfg, "capture_layers": [1, 13, 24],
+                   "artifact_key": key, "target_revision": "pinned"}
+        return payload, observed
+    return make
+
+
+def test_full_feature_preflight_never_hashes_contents(pipeline, sealed_features, monkeypatch):
+    module, _, _ = pipeline
+    payload, observed = sealed_features()
+    def forbidden(*args):
+        pytest.fail("Training preflight must not rehash checkpoint contents")
+    monkeypatch.setattr(module, "sha256_file", forbidden)
+    monkeypatch.setattr(module, "feature_inventory", forbidden)
     module.check_features(payload)
-    (tmp_path / "train/0.ckpt").write_bytes(b"corrupt")
+    # Keep the file size check even though full hashes are no longer recomputed.
+    observed[Path(payload["config"]["data"]["hidden_states_path"])][0]["bytes"] += 1
     with pytest.raises(ValueError, match="changed"):
         module.check_features(payload)
 
+
+def test_feature_metadata_reads_no_contents(pipeline, tmp_path, monkeypatch):
+    module, _, _ = pipeline
+    (tmp_path / "0.ckpt").write_bytes(b"feature")
+    def forbidden(*args, **kwargs):
+        pytest.fail("Metadata validation must not open checkpoint contents")
+    monkeypatch.setattr(Path, "open", forbidden)
+    assert module.feature_metadata(tmp_path) == [{"path": "0.ckpt", "bytes": 7}]
+
+
+@pytest.mark.parametrize("mutation", ["contract", "capture_layers", "target_revision", "hash"])
+def test_feature_manifest_metadata_mismatch(pipeline, sealed_features, mutation):
+    module, _, _ = pipeline
+    payload, _ = sealed_features()
+    path = Path(payload["config"]["data"]["hidden_states_path"]) / "artifact_manifest.json"
+    manifest = json.loads(path.read_text())
+    if mutation == "contract":
+        manifest["contract"]["specforge_sha"] = "wrong"
+    elif mutation == "hash":
+        manifest["files"][0]["sha256"] = "invalid"
+    else:
+        manifest[mutation] = "wrong"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        module.check_features(payload)
+
+
+@pytest.mark.parametrize("mutation", ["key", "path", "test_split", "symlink"])
+def test_feature_identity_and_path_mismatch(pipeline, sealed_features, mutation):
+    module, _, _ = pipeline
+    payload, _ = sealed_features()
+    if mutation == "key":
+        payload["artifact_key"] = "wrong"
+    elif mutation == "symlink":
+        # Simulate a path resolving outside its selected artifact, without OS symlink privileges.
+        original = Path.resolve
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(Path, "resolve", lambda self: original(self).parent / "other")
+            with pytest.raises(ValueError, match="path mismatch"):
+                module.check_features(payload)
+        return
+    else:
+        field = "hidden_states_path"
+        path = Path(payload["config"]["data"][field])
+        payload["config"]["data"][field] = str(path.parent / "wrong" if mutation == "path"
+                                               else module.FEATURE_ROOT / "test" / payload["artifact_key"])
+    with pytest.raises(ValueError):
+        module.check_features(payload)
+
+
+@pytest.mark.parametrize("missing", ["manifest", "artifact"])
+def test_missing_feature_artifact_fails(pipeline, sealed_features, missing):
+    module, _, _ = pipeline
+    payload, _ = sealed_features()
+    directory = Path(payload["config"]["data"]["hidden_states_path"])
+    (directory / "artifact_manifest.json").unlink()
+    if missing == "artifact":
+        directory.rmdir()
+    with pytest.raises(FileNotFoundError):
+        module.check_features(payload)
 
 
 def test_bounded_preparation_cli_dispatch_and_no_test_capture(pipeline):
@@ -179,37 +269,20 @@ def test_extraction_limits_and_manifest_counts(pipeline, tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("smoke", [True, False])
-def test_checker_enforces_scope_specific_exact_counts(pipeline, tmp_path, monkeypatch, smoke):
+@pytest.mark.parametrize("label,field", [("train", "hidden_states_path"), ("eval", "eval_hidden_states_path")])
+def test_checker_enforces_scope_specific_exact_counts(pipeline, sealed_features, smoke, label, field):
     module, _, _ = pipeline
-    module.SMOKE_FEATURE_ROOT = tmp_path / "smoke"
-    counts = {"train": 64, "eval": 16} if smoke else {"train": 40000, "eval": 3000}
-    contract = {"raw": {"train": {"rows": 40000}, "val": {"rows": 3000}}}
-    if smoke:
-        contract.update(feature_scope="smoke", train_samples=64, eval_samples=16)
-    root = tmp_path / ("smoke" if smoke else "full")
-    config = {"data": {}}
-    for label, field in (("train", "hidden_states_path"), ("eval", "eval_hidden_states_path")):
-        directory = root / label
-        directory.mkdir(parents=True)
-        config["data"][field] = str(directory)
-        manifest = {"contract": contract, "capture_layers": [1, 13, 24],
-                    "files": [{"path": "mock-feature"}] * counts[label]}
-        if smoke:
-            manifest.update(raw_counts={"train": 40000, "val": 3000},
-                            selected_counts=counts, produced_counts={label: counts[label]})
-        (directory / "artifact_manifest.json").write_text(json.dumps(manifest))
-    payload = {"contract": contract, "config": config, "capture_layers": [1, 13, 24]}
-    monkeypatch.setattr(module, "feature_inventory",
-                        lambda directory: json.loads((directory / "artifact_manifest.json").read_text())["files"])
+    payload, _ = sealed_features(smoke)
     module.check_features(payload)
-    path = root / "train/artifact_manifest.json"
+    path = Path(payload["config"]["data"][field]) / "artifact_manifest.json"
     altered = json.loads(path.read_text())
     altered["files"] = altered["files"][:-1]
     path.write_text(json.dumps(altered))
     with pytest.raises(ValueError, match="count mismatch"):
         module.check_features(payload)
     # Paths from the other scope cannot satisfy this contract.
-    config["data"]["hidden_states_path"] = str(tmp_path / ("full" if smoke else "smoke") / "train")
+    payload["config"]["data"]["hidden_states_path"] = str(
+        module.FEATURE_ROOT / "full" if smoke else module.SMOKE_FEATURE_ROOT / "train")
     with pytest.raises(ValueError, match="namespace"):
         module.check_features(payload)
 

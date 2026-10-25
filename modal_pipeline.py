@@ -1,9 +1,12 @@
 """Modal-only M3-04 runtime. Default entrypoint is the CPU plan gate."""
+import hashlib
 import json
+import re
 import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from stat import S_ISREG
 
 import modal
 
@@ -38,7 +41,8 @@ app_image = (
 )
 app = modal.App("qwen2-5-eagle3.1-speculator", image=app_image)
 wandb_secret = modal.Secret.from_name("wandb-secret", required_keys=["WANDB_API_KEY"])
-SMOKE_FEATURE_ROOT = Path("/vol/hidden_states/m3-04/smoke")
+FEATURE_ROOT = Path("/vol/hidden_states/m3-04")
+SMOKE_FEATURE_ROOT = FEATURE_ROOT / "smoke"
 
 
 def execution_source():
@@ -64,34 +68,65 @@ def save_json(path, value):
         json.dump(value, stream, indent=2, sort_keys=True, ensure_ascii=False)
 
 
-def feature_inventory(directory):
+def feature_metadata(directory):
+    """Check names and sizes without reading the large checkpoint contents."""
     files = sorted(Path(directory).rglob("*.ckpt"))
-    return [
-        {"path": str(p.relative_to(directory)), "bytes": p.stat().st_size, "sha256": sha256_file(p)}
-        for p in files
-    ]
+    metadata = []
+    for path in files:
+        info = path.lstat()
+        if not S_ISREG(info.st_mode):
+            raise ValueError("Feature must be a regular file")
+        metadata.append({"path": str(path.relative_to(directory)), "bytes": info.st_size})
+    return metadata
+
+
+def feature_inventory(directory):
+    # Full-content evidence is produced once, before the manifest is written.
+    return [{**item, "sha256": sha256_file(Path(directory) / item["path"])}
+            for item in feature_metadata(directory)]
 
 
 def check_features(payload):
     counts = feature_counts(payload["contract"])
     smoke = payload["contract"].get("feature_scope") == "smoke"
+    key = hashlib.sha256(json.dumps(payload["contract"], sort_keys=True).encode()).hexdigest()[:20]
+    if payload["artifact_key"] != key:
+        raise ValueError("Feature artifact identity mismatch")
+    if not smoke and counts != feature_selection("full"):
+        raise ValueError("Feature sample count mismatch")
     for split, field in (("train", "hidden_states_path"), ("val", "eval_hidden_states_path")):
         label = "eval" if split == "val" else split
         directory = Path(payload["config"]["data"][field])
         if smoke != directory.is_relative_to(SMOKE_FEATURE_ROOT):
             raise ValueError("Feature namespace does not match scope")
+        expected = SMOKE_FEATURE_ROOT / key / label if smoke else FEATURE_ROOT / label / key
+        if directory != expected or directory.resolve() != expected.absolute():
+            raise ValueError("Feature artifact path mismatch")
         manifest = json.loads((directory / "artifact_manifest.json").read_text())
         if manifest["contract"] != payload["contract"] or manifest["capture_layers"] != payload["capture_layers"]:
             raise ValueError("Feature contract mismatch")
+        if manifest["target_revision"] != payload["target_revision"]:
+            raise ValueError("Feature target revision mismatch")
         if len(manifest["files"]) != counts[label]:
             raise ValueError("Feature sample count mismatch")
+        metadata = []
+        for item in manifest["files"]:
+            path = Path(item["path"])
+            if (path.is_absolute() or ".." in path.parts or path.suffix != ".ckpt"
+                    or type(item["bytes"]) is not int or item["bytes"] <= 0
+                    or not isinstance(item["sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])):
+                raise ValueError("Invalid feature inventory metadata")
+            metadata.append({"path": item["path"], "bytes": item["bytes"]})
         if smoke and (
             manifest.get("raw_counts") != {s: payload["contract"]["raw"][s]["rows"] for s in ("train", "val")}
             or manifest.get("selected_counts") != counts
             or manifest.get("produced_counts") != {label: counts[label]}
         ):
             raise ValueError("Smoke manifest count metadata mismatch")
-        if feature_inventory(directory) != manifest["files"]:
+        # Trust preparation's stored hashes; retain O(file count) metadata checks.
+        # Same-size content mutation requires a separate full integrity audit.
+        if feature_metadata(directory) != metadata:
             raise ValueError("Feature contents changed")
 
 
