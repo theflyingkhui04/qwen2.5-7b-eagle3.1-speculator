@@ -95,3 +95,24 @@ def test_upload_to_huggingface_with_mock_api(tmp_path):
             repo_type="model",
         )
         mock_api_instance.upload_folder.assert_called_once()
+
+
+@pytest.mark.parametrize("dtype", ["bfloat16", "float16", "float32"])
+def test_packaging_native_serialized_dtype(tmp_path, dtype):
+    import torch
+    from safetensors.torch import save_file
+    from transformers import LlamaConfig
+
+    # Native save_pretrained writes dtype, not the legacy torch_dtype key.
+    LlamaConfig(architectures=["LlamaForCausalLMEagle3"], dtype=dtype).save_pretrained(tmp_path)
+    save_file({"lm_head.weight": torch.zeros(1, dtype=getattr(torch, dtype))},
+              str(tmp_path / "model.safetensors"))
+    config = json.loads((tmp_path / "config.json").read_text())
+    assert config["dtype"] == dtype and "torch_dtype" not in config
+    if dtype == "bfloat16":
+        assert build_hf_config(config) == config
+        assert verify_package_integrity(tmp_path)
+    else:
+        with pytest.raises(ValueError, match="BF16"):
+            build_hf_config(config)
+        assert not verify_package_integrity(tmp_path)

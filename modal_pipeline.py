@@ -100,7 +100,10 @@ def check_features(payload):
         if smoke != directory.is_relative_to(SMOKE_FEATURE_ROOT):
             raise ValueError("Feature namespace does not match scope")
         expected = SMOKE_FEATURE_ROOT / key / label if smoke else FEATURE_ROOT / label / key
-        if directory != expected or directory.resolve() != expected.absolute():
+        # /vol may itself alias Modal's physical volume mount. Resolve that
+        # shared root, but forbid artifact links escaping the selected key.
+        resolved_expected = FEATURE_ROOT.resolve() / expected.relative_to(FEATURE_ROOT)
+        if directory != expected or directory.resolve() != resolved_expected:
             raise ValueError("Feature artifact path mismatch")
         manifest = json.loads((directory / "artifact_manifest.json").read_text())
         if manifest["contract"] != payload["contract"] or manifest["capture_layers"] != payload["capture_layers"]:

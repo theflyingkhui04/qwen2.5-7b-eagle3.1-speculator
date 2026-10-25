@@ -24,7 +24,7 @@ def build_hf_config(base_config: Dict[str, Any], precision: str = "bfloat16") ->
     config = dict(base_config)
     if config.get("architectures") != ["LlamaForCausalLMEagle3"]:
         raise ValueError("Export with native specforge export before packaging")
-    if precision != "bfloat16" or config.get("torch_dtype") != precision:
+    if precision != "bfloat16" or config.get("dtype", config.get("torch_dtype")) != precision:
         raise ValueError("Packaging must preserve native BF16 weights and config")
     return config
 
@@ -47,7 +47,7 @@ def verify_package_integrity(export_dir: Any) -> bool:
         with open(config_file, "r", encoding="utf-8") as f:
             cfg = json.load(f)
         archs = cfg.get("architectures", [])
-        if archs != ["LlamaForCausalLMEagle3"] or cfg.get("torch_dtype") != "bfloat16":
+        if archs != ["LlamaForCausalLMEagle3"] or cfg.get("dtype", cfg.get("torch_dtype")) != "bfloat16":
             return False
     except Exception:
         return False

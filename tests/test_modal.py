@@ -301,3 +301,83 @@ def test_extraction_rejects_incomplete_smoke_features(pipeline, tmp_path, monkey
     with pytest.raises(ValueError, match="selected count"):
         module.prepare_hidden_states(payload)
     assert not (tmp_path / "train/artifact_manifest.json").exists()
+
+
+def test_full_config_to_real_features_on_aliased_volume(pipeline, tmp_path, monkeypatch):
+    """No current entries: resolve canonical placeholders to sealed keyed data.
+
+    Modal exposes /vol through its physical /__modal/volumes/<id> mount.
+    Only the mount location is relocated here; resolve and inventory are real.
+    """
+    from training.train import feature_paths, load_training_config
+
+    module, _, _ = pipeline
+    physical = tmp_path / "physical-volume"
+    physical.mkdir()
+    mount = tmp_path / "vol"
+
+    def link(source, destination):
+        if sys.platform == "win32":
+            import _winapi
+            _winapi.CreateJunction(str(source), str(destination))
+        else:
+            destination.symlink_to(source, target_is_directory=True)
+
+    link(physical, mount)
+
+    def mounted_path(value):
+        text = str(value)
+        return mount / text[len("/vol/"):] if text.startswith("/vol/") else Path(value)
+
+    monkeypatch.setattr(module, "Path", mounted_path)
+    module.FEATURE_ROOT = mount / "hidden_states/m3-04"
+    module.SMOKE_FEATURE_ROOT = module.FEATURE_ROOT / "smoke"
+    original = load_training_config()
+    assert original["data"]["hidden_states_path"].endswith("/train/current")
+    assert original["data"]["eval_hidden_states_path"].endswith("/eval/current")
+    revision = "a09a35458c702b33eeacc393d103063234e8bc28"
+    original["model"]["target_model_path"] = (
+        "/__modal/volumes/vo-OV83DsWyBYwZAYq9SQ3y2E/hf-cache/hub/"
+        "models--Qwen--Qwen2.5-7B-Instruct/snapshots/" + revision
+    )
+    cfg, key, contract = feature_paths(original, ROOT / "configs/eagle3.1_qwen2.5_7b.json")
+    assert key == "a113d35ad76e959e31dd"  # Persisted canonical preparation identity.
+    for label, field, count in (("train", "hidden_states_path", 40000),
+                                ("eval", "eval_hidden_states_path", 3000)):
+        assert cfg["data"][field] == f"/vol/hidden_states/m3-04/{label}/{key}"
+        directory = mounted_path(cfg["data"][field])
+        directory.mkdir(parents=True)
+        assert not (directory.parent / "current").exists()
+        files = []
+        for i in range(count):
+            name = f"{i:05d}.ckpt"
+            (directory / name).write_bytes(b"feature")
+            files.append({"path": name, "bytes": 7, "sha256": "a" * 64})
+        (directory / "artifact_manifest.json").write_text(json.dumps({
+            "contract": contract, "capture_layers": [1, 13, 24],
+            "target_revision": revision, "files": files,
+        }))
+    payload = {"config": cfg, "contract": contract, "artifact_key": key,
+               "capture_layers": [1, 13, 24], "target_revision": revision}
+    module.check_features(payload)
+
+    # Keep the real inventory and resolver for every rejection as well.
+    field = "hidden_states_path"
+    selected = cfg["data"][field]
+    for invalid in (
+        f"/vol/hidden_states/m3-04/train/wrong-key",
+        f"/vol/elsewhere/train/{key}",
+        f"/vol/hidden_states/m3-04/smoke/{key}/train",
+        f"/vol/hidden_states/m3-04/test/{key}",
+        "/vol/hidden_states/m3-04/train/current",
+    ):
+        cfg["data"][field] = invalid
+        with pytest.raises(ValueError):
+            module.check_features(payload)
+    cfg["data"][field] = selected
+    directory = mounted_path(selected)
+    wrong = directory.with_name("wrong-key")
+    directory.rename(wrong)
+    link(wrong.resolve(), directory)
+    with pytest.raises(ValueError, match="path mismatch"):
+        module.check_features(payload)
