@@ -29,7 +29,7 @@ task-requirements/
 | :--- | :--- | :---: | :--- |
 | **Task 1** | Chuẩn hóa tầng dữ liệu sang ShareGPT JSONL, phân chia 40k Train / 3k Val / 2k Test | `DONE` | [task-1-dataset-pipeline.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-1-dataset-pipeline.md) |
 | **Task 2** | Dọn dẹp `extraction/`, `training/model.py`, `training/loss.py` và ghim chuẩn EAGLE-3.1 | `DONE` | [task-2-cleanup-and-eagle3.1-pinning.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-2-cleanup-and-eagle3.1-pinning.md) |
-| **Task 3** | Cập nhật `requirements.txt`, `configs/train_config.yaml`, `configs/eagle3.1_qwen2.5_7b.json` | `PENDING` | [task-3-dependencies-and-configs.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-3-dependencies-and-configs.md) |
+| **Task 3** | Cập nhật `requirements.txt`, `configs/train_config.yaml`, `configs/eagle3.1_qwen2.5_7b.json` | `DONE` | [task-3-dependencies-and-configs.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-3-dependencies-and-configs.md) |
 | **Task 4** | Viết lại `training/train.py` thành SpecForge Launcher gọi `torchrun -m specforge.train` | `PENDING` | [task-4-specforge-launcher.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-4-specforge-launcher.md) |
 | **Task 5** | Tinh chỉnh `export/package_and_upload.py` để đóng gói checkpoint SpecForge | `PENDING` | [task-5-export-and-packaging.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-5-export-and-packaging.md) |
 | **Task 6** | Cập nhật `run_all.sh`, `modal_pipeline.py`, `notebooks/`, hoàn thiện `tests/` và `README.md` | `PENDING` | [task-6-orchestration-and-testing.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/task-requirements/task-6-orchestration-and-testing.md) |
@@ -54,10 +54,10 @@ task-requirements/
 - [x] Ghim quy tắc kiến trúc EAGLE-3.1 vào `AGENTS.md` và `configs/eagle3.1_qwen2.5_7b.json` (bổ sung `norm_output: true`).
 
 ### Task 3: Cập nhật thư viện và file cấu hình
-- [ ] Cập nhật `requirements.txt` bổ sung `sglang[all]`, `git+https://github.com/sgl-project/SpecForge.git`, `datasets`.
-- [ ] Chuẩn hóa `configs/train_config.yaml` khớp với SpecForge (`ttt_length: 5`, `tp_size: 1`, `max_seq_len: 2048`).
-- [ ] Khóa cứng `configs/eagle3.1_qwen2.5_7b.json` (giữ `use_fc_norm: true`, `norm_output: true`, `target_layer: 28`).
-- [ ] Cập nhật và chạy `tests/test_configs.py` đạt 100% PASS.
+- [x] Cập nhật `requirements.txt` bổ sung `sglang[all]`, `git+https://github.com/sgl-project/SpecForge.git`, `datasets`.
+- [x] Chuẩn hóa `configs/train_config.yaml` khớp với SpecForge (`ttt_length: 5`, `tp_size: 1`, `max_seq_len: 2048`).
+- [x] Khóa cứng `configs/eagle3.1_qwen2.5_7b.json` (giữ `use_fc_norm: true`, `norm_output: true`, `target_layer: 28`).
+- [x] Cập nhật và chạy `tests/test_configs.py` đạt 100% PASS.
 
 ### Task 4: Xây dựng SpecForge Launcher
 - [ ] Viết lại `training/train.py` thành CLI builder đọc YAML và gọi `torchrun -m specforge.train`.

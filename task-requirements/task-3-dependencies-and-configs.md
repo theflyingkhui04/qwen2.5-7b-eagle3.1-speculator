@@ -2,8 +2,8 @@
 
 - **Mã nhiệm vụ:** `TASK-03`
 - **Tên nhiệm vụ:** Cập nhật môi trường phụ thuộc (dependencies) và chuẩn hóa cấu hình SpecForge
-- **Trạng thái:** Chờ thực hiện (Pending)
-- **Tài liệu tham chiếu:** [configs/eagle3.1_qwen2.5_7b.json](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/configs/eagle3.1_qwen2.5_7b.json), [configs/train_config.yaml](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/configs/train_config.yaml)
+- **Trạng thái:** Đã hoàn thành (Done)
+- **Tài liệu tham chiếu:** [worklogs/task-3.md](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/worklogs/task-3.md), [configs/eagle3.1_qwen2.5_7b.json](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/configs/eagle3.1_qwen2.5_7b.json), [configs/train_config.yaml](file:///d:/DoAn/qwen2.5-7b-eagle3.1-speculator/configs/train_config.yaml)
 
 ---
 
@@ -35,6 +35,6 @@ tp_size: 1
 ---
 
 ## 3. Tiêu chuẩn nghiệm thu (Definition of Done - DoD)
-- [ ] `requirements.txt` chứa đầy đủ các gói thư viện cần thiết cho SpecForge.
-- [ ] `configs/train_config.yaml` chứa đủ các trường tham số và trỏ đúng đường dẫn dữ liệu.
-- [ ] Bài test `tests/test_configs.py` xác thực tính hợp lệ của YAML và JSON đạt 100% PASS.
+- [x] `requirements.txt` chứa đầy đủ các gói thư viện cần thiết cho SpecForge.
+- [x] `configs/train_config.yaml` chứa đủ các trường tham số và trỏ đúng đường dẫn dữ liệu.
+- [x] Bài test `tests/test_configs.py` xác thực tính hợp lệ của YAML và JSON đạt 100% PASS.
