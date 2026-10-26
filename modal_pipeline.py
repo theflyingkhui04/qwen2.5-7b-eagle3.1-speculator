@@ -15,6 +15,7 @@ from training.train import (
     feature_selection, load_training_config,
     resolved_config, sha256_file, verify_runtime, write_config,
 )
+from training.native_vocab_mapping import prepare_native_vocab_mapping, validate_native_vocab_mapping
 
 volume = modal.Volume.from_name("qwen-eagle3-volume", create_if_missing=False)
 app_image = (
@@ -177,9 +178,9 @@ def preflight(mode="plan", execution=None, feature_scope="full", train_samples=N
     }
     evidence = Path("/vol/runs/m3-04") / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
     evidence.mkdir(parents=True, exist_ok=False)
-    config_path = write_config(cfg, evidence / "resolved.yaml")
+    config_path = evidence / "resolved.yaml"
     payload = {
-        "config": cfg, "config_path": str(config_path), "config_sha256": sha256_file(config_path),
+        "config": cfg, "config_path": str(config_path),
         "contract": contract, "artifact_key": key, "capture_layers": list(resolved.capture_layers),
         "resolved_draft": draft, "versions": versions, "execution": execution,
         "target_revision": revision, "target_id": target_id, "raw": raw,
@@ -216,8 +217,11 @@ def preflight(mode="plan", execution=None, feature_scope="full", train_samples=N
             payload["prepared"] = prepared
         elif mode == "features":
             check_features(payload)
+            prepare_native_vocab_mapping(payload)
         elif mode != "plan":
             raise ValueError("Unknown preflight mode")
+        write_config(cfg, config_path)
+        payload["config_sha256"] = sha256_file(config_path)
         result = subprocess.run(
             ["specforge", "train", "-c", str(config_path), "--plan"],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -279,6 +283,7 @@ def train_specforge(payload, smoke=False, resume=False):
     volume.reload()
     if smoke != (payload["contract"].get("feature_scope") == "smoke"):
         raise ValueError("Training mode and feature scope differ")
+    validate_native_vocab_mapping(payload)
     cfg = resolved_config(payload["config"], smoke=smoke, run_suffix=uuid.uuid4().hex[:10], resume=resume)
     output = Path(cfg["output_dir"])
     latest = output / (cfg["run_id"] + "-latest")

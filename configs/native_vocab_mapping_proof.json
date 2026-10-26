@@ -1,0 +1,25 @@
+{
+  "artifact_key": "a113d35ad76e959e31dd",
+  "specforge_sha": "fddcb4ad37733a821708170df28cac2f7bb6ea05",
+  "target_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+  "train_manifest_sha256": "6e58292f0a054167d08df1d78bbf6cd7bc3b779482658f067e7bdc3d045b1fb2",
+  "cache_identity": "f60968e1f91ca5759dffaed4147cf79e",
+  "train_samples": 40000,
+  "max_length": 2048,
+  "target_vocab_size": 152064,
+  "draft_vocab_size": 16000,
+  "tensor_sha256": {
+    "t2d": "2c10e7206a2cbfd763acfc4538967f0b52c3656d2a30da3d7b151ccf73e2fc80",
+    "d2t": "d1678443a756c734089e0792b2487b17b2d5db6ce451b324eae5b8ee78b26dc0"
+  },
+  "cache_shards": [
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00000_of_00008.pkl", "rows": 5000, "bytes": 35120440, "sha256": "dae625953d0b1fd40591d0794ea82905637947fafc69b809792d0b235b42512d"},
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00001_of_00008.pkl", "rows": 5000, "bytes": 35307752, "sha256": "07472788b42a38f0896e281e5475a19ae9e6c1479e4e8c321bfc15ffa6ce8149"},
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00002_of_00008.pkl", "rows": 5000, "bytes": 35135088, "sha256": "0cf22f898de646fa89bd81feecb89e200a22a8d26f50418aca257c095eceb26f"},
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00003_of_00008.pkl", "rows": 5000, "bytes": 34776920, "sha256": "d3d80ca0f293c1910902c2c5fbdadda2b1ccb6c3026d2f332300ea79bc3daf43"},
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00004_of_00008.pkl", "rows": 5000, "bytes": 35589320, "sha256": "34f43144708aec932aad73486846fb37539f2bf1e87042e6fe7ea627d5c1ea59"},
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00005_of_00008.pkl", "rows": 5000, "bytes": 34680456, "sha256": "3b77b058f6a335661a804a8623f928f4acc7a6c059345fd428c7cfe6423ba36c"},
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00006_of_00008.pkl", "rows": 5000, "bytes": 35808456, "sha256": "dc4a54d8da5a43979f83e2461fbfb3e00b7d463948d57f819ba914a0f09374b6"},
+    {"name": "f60968e1f91ca5759dffaed4147cf79e_00007_of_00008.pkl", "rows": 5000, "bytes": 35875096, "sha256": "2a7901d654eed43617bc5a8c2c658e317b55800ec021f901cb51cb1c616be6b2"}
+  ]
+}

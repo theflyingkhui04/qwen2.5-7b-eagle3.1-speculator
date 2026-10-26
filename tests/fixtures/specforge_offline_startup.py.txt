@@ -1,0 +1,193 @@
+# Read-only excerpts from sgl-project/SpecForge (Apache-2.0).
+# Revision: fddcb4ad37733a821708170df28cac2f7bb6ea05
+# Original bodies unchanged; tests inject imports to avoid the GPU runtime.
+from __future__ import annotations
+
+# Source: specforge/runtime/data_plane/feature_store.py
+def load_feature_file(path: str) -> Dict[str, torch.Tensor]:
+    """Load one prepared SpecForge offline feature file."""
+    if path.endswith(".gz"):
+        with gzip.open(path, "rb") as f:
+            return torch.load(io.BytesIO(f.read()), weights_only=False)
+    return torch.load(path, weights_only=False, mmap=True)
+
+# Source: specforge/runtime/data_plane/offline_reader.py
+def _inspect_feature_file(
+    path: str, feature_keys: Tuple[str, ...]
+) -> Tuple[Dict[str, FeatureSpec], int, int]:
+    raw = load_feature_file(path)
+    missing = [key for key in feature_keys if key not in raw]
+    if missing:
+        raise KeyError(f"{path} missing required offline feature keys {missing}")
+
+    specs: Dict[str, FeatureSpec] = {}
+    estimated_bytes = 0
+    for key in feature_keys:
+        value = raw[key]
+        if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+            raise TypeError(f"{path} feature {key!r} is not a tensor: {type(value)!r}")
+        specs[key] = spec_from_tensor(key, value)
+        estimated_bytes += int(value.numel() * value.element_size())
+
+    input_ids = raw.get("input_ids")
+    num_tokens = int(input_ids.numel()) if input_ids is not None else 0
+    return specs, num_tokens, estimated_bytes
+
+
+def list_feature_files(path: str) -> List[str]:
+    """Deterministically (sorted) list feature files under ``path``."""
+    if os.path.isfile(path):
+        return [os.path.abspath(path)]
+    files: List[str] = []
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            if name.endswith(_FEATURE_SUFFIXES):
+                files.append(os.path.abspath(os.path.join(root, name)))
+    files.sort()  # deterministic, stable cross-rank ordering
+    return files
+
+
+class OfflineManifestReader:
+    """Reads a directory of offline feature files into ``SampleRef`` records."""
+
+    def __init__(
+        self,
+        hidden_states_path: str,
+        *,
+        run_id: str = "offline",
+        strategy: str = "eagle3",
+        target_model_version: str = "unknown",
+        tokenizer_version: str = "unknown",
+        feature_keys: tuple = _OFFLINE_EAGLE3_KEYS,
+        ttt_length: int = 7,
+        max_len: int = 2048,
+        target_repr: Optional[str] = "hidden_state",
+        validate_files: Optional[bool] = None,
+    ) -> None:
+        self.hidden_states_path = hidden_states_path
+        self.run_id = run_id
+        self.strategy = strategy
+        self.target_model_version = target_model_version
+        self.tokenizer_version = tokenizer_version
+        self.feature_keys = tuple(feature_keys)
+        self.ttt_length = ttt_length
+        self.max_len = max_len
+        self.target_repr = target_repr
+        # Spec-less refs stay usable: FeatureDataLoader._validate_refs skips
+        # spec comparison when no ref carries specs, the store resolves tensors
+        # through feature_keys rather than specs, and nothing reads num_tokens
+        # or estimated_bytes off a file:// ref. The cost of skipping the eager
+        # pass is that a missing key or a non-tensor value surfaces on first
+        # access instead of at assembly time.
+        if validate_files is None:
+            validate_files = os.environ.get(_VALIDATE_ENV, "0") == "1"
+        self.validate_files = bool(validate_files)
+
+    def _ref_for(self, index: int, path: str) -> SampleRef:
+        sample_id = f"{self.run_id}:{index:08d}"
+        specs: Dict[str, FeatureSpec] = {}
+        num_tokens = 0
+        estimated_bytes = 0
+        if self.validate_files:
+            specs, num_tokens, estimated_bytes = _inspect_feature_file(
+                path, self.feature_keys
+            )
+        return SampleRef(
+            sample_id=sample_id,
+            run_id=self.run_id,
+            source_task_id=None,
+            feature_store_uri=f"file://{path}",
+            feature_keys={k: k for k in self.feature_keys},
+            feature_specs=specs,
+            strategy=self.strategy,
+            schema_version=SCHEMA_VERSION,
+            target_model_version=self.target_model_version,
+            tokenizer_version=self.tokenizer_version,
+            num_tokens=num_tokens,
+            estimated_bytes=estimated_bytes,
+            metadata={
+                "format": f"offline_{self.strategy}",
+                "target_repr": self.target_repr,
+                "schema_version": SCHEMA_VERSION,
+                "ttt_length": self.ttt_length,
+                "max_len": self.max_len,
+                "file_index": index,
+            },
+        )
+
+    def __iter__(self) -> Iterator[SampleRef]:
+        for index, path in enumerate(list_feature_files(self.hidden_states_path)):
+            yield self._ref_for(index, path)
+
+    def read(self, limit: Optional[int] = None) -> List[SampleRef]:
+        refs: List[SampleRef] = []
+        for i, ref in enumerate(self):
+            if limit is not None and i >= limit:
+                break
+            refs.append(ref)
+        return refs
+
+# Source: specforge/data/preprocessing.py
+def generate_vocab_mapping_file(
+    dataset: HFDataset,
+    target_vocab_size: int,
+    draft_vocab_size: int,
+    cache_dir: str = "./cache/vocab_mapping",
+    cache_key: str = "vocab_mapping",
+) -> str:
+    """
+    Generate a vocab mapping file for the dataset.
+
+    Args:
+        dataset: The dataset to process.
+        target_vocab_size: The target vocabulary size.
+        draft_vocab_size: The draft vocabulary size.
+        cache_dir: The directory to use for caching the vocab mapping file.
+        cache_key: The key to use for caching the vocab mapping file.
+
+    Returns:
+        The path to the vocab mapping file.
+    """
+    # prepare cache directory
+    os.makedirs(cache_dir, exist_ok=True)
+    vocab_mapping_path = os.path.join(cache_dir, f"{cache_key}.pt")
+
+    if os.path.exists(vocab_mapping_path):
+        print(f"Loading vocab mapping from the cached file at: {vocab_mapping_path}")
+        return vocab_mapping_path
+
+    # we first count the frequency of effective tokens in the dataset
+    token_dict = Counter()
+    for input_ids, loss_mask in tqdm(
+        zip(dataset["input_ids"], dataset["loss_mask"]),
+        total=len(dataset),
+        desc="Counting tokens for vocab mapping",
+    ):
+        masked_ids = input_ids[loss_mask == 1]
+        unique_ids, counts = masked_ids.unique(return_counts=True)
+        batch_token_dict = dict(zip(unique_ids.tolist(), counts.tolist()))
+        token_dict.update(batch_token_dict)
+
+    # generate the d2t and t2d mapping
+    d2t, t2d = process_token_dict_to_mappings(
+        token_dict,
+        draft_vocab_size,
+        target_vocab_size,
+    )
+
+    vocab_mapping = {
+        "d2t": d2t,
+        "t2d": t2d,
+    }
+    torch.save(vocab_mapping, vocab_mapping_path)
+    print(f"Saved vocab mapping to: {vocab_mapping_path}")
+    return vocab_mapping_path
+
+# Source: specforge/training/assembly.py
+def _dataloader_num_workers(cfg: Config, algorithm: AlgorithmRegistration) -> int:
+    dataloader_num_workers = cfg.data.dataloader_num_workers
+    if dataloader_num_workers is None:
+        dataloader_num_workers = (
+            algorithm.providers.model.default_dataloader_num_workers
+        )
+    return dataloader_num_workers
