@@ -47,6 +47,112 @@ def test_resume_is_full_resume_not_warm_start():
     assert "draft_checkpoint_path" not in cfg["model"]
 
 
+def test_explicit_resume_changes_only_resume_field():
+    import copy
+    original = load_training_config()
+    path = original["output_dir"] + "/" + original["run_id"] + "-step3000"
+    cfg = resolved_config(original, resume=True, resume_from=path)
+    expected = copy.deepcopy(original)
+    expected["training"]["resume_from"] = path
+    assert cfg == expected
+    with pytest.raises(ValueError, match="explicit resume"):
+        resolved_config(original, resume_from=path)
+
+
+@pytest.fixture
+def resume_checkpoint(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    import training.train as train
+    canonical = load_training_config()
+    canonical["output_dir"] = str(tmp_path)
+    monkeypatch.setattr(train, "load_training_config", lambda *args: canonical)
+    checkpoint = tmp_path / (canonical["run_id"] + "-step3000")
+    checkpoint.mkdir()
+    state = {"run_id": canonical["run_id"], "global_step": 3000, "world_size": 1,
+             "strategy": "eagle3", "backend": {"optimizer": {}, "rng": {"torch": "state"}}}
+    from unittest.mock import MagicMock
+    reader = MagicMock(return_value=state)
+    monkeypatch.setitem(sys.modules, "specforge.training.checkpoint", SimpleNamespace(
+        CheckpointManager=SimpleNamespace(read_resume_state=reader)))
+    cfg = resolved_config(canonical, resume=True, resume_from=str(checkpoint))
+    return train, cfg, checkpoint, state, reader
+
+
+def test_resume_authenticates_step3000_and_uses_native_full_state_reader(resume_checkpoint):
+    train, cfg, checkpoint, _, reader = resume_checkpoint
+    assert train.validate_resume_checkpoint(cfg) == str(checkpoint)
+    reader.assert_called_once_with(str(checkpoint.resolve()), map_location="cpu", require_full_state=True)
+    assert "draft_checkpoint_path" not in cfg["model"]
+
+
+@pytest.mark.parametrize("field,value", [("run_id", "smoke"), ("global_step", 2000),
+                                       ("world_size", 2), ("strategy", "other"),
+                                       ("backend", {}), ("backend", {"optimizer": {}, "rng": {}})])
+def test_resume_rejects_wrong_or_incomplete_state(resume_checkpoint, field, value):
+    train, cfg, _, state, _ = resume_checkpoint
+    state[field] = value
+    with pytest.raises(ValueError):
+        train.validate_resume_checkpoint(cfg)
+
+
+@pytest.mark.parametrize("name", ["m3-04-qwen2.5-7b-eagle3.1-smoke-test-step1",
+                                  "other-step3000", "m3-04-qwen2.5-7b-eagle3.1-step3550"])
+def test_resume_rejects_smoke_wrong_run_or_missing_checkpoint(resume_checkpoint, name):
+    train, cfg, checkpoint, _, reader = resume_checkpoint
+    selected = checkpoint.with_name(name)
+    if not name.endswith("3550"):
+        selected.mkdir()
+    cfg["training"]["resume_from"] = str(selected)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        train.validate_resume_checkpoint(cfg)
+    reader.assert_not_called()
+
+
+def test_resume_rejects_wrong_namespace(resume_checkpoint):
+    train, cfg, checkpoint, _, reader = resume_checkpoint
+    cfg["training"]["resume_from"] = str(checkpoint.parent.parent / checkpoint.name)
+    with pytest.raises(ValueError, match="namespace"):
+        train.validate_resume_checkpoint(cfg)
+    reader.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["output_dir", "run_id", "topology"])
+def test_resume_rejects_noncanonical_config(resume_checkpoint, field):
+    train, cfg, _, _, reader = resume_checkpoint
+    if field == "topology":
+        cfg["deployment"]["trainer"]["nproc_per_node"] = 2
+    else:
+        cfg[field] += "-wrong"
+    with pytest.raises(ValueError, match="canonical output namespace"):
+        train.validate_resume_checkpoint(cfg)
+    reader.assert_not_called()
+
+
+def test_resume_propagates_native_incomplete_checkpoint_failure(resume_checkpoint):
+    train, cfg, _, _, reader = resume_checkpoint
+    reader.side_effect = ValueError("no usable per-rank state")
+    with pytest.raises(ValueError, match="per-rank state"):
+        train.validate_resume_checkpoint(cfg)
+
+
+def test_latest_alias_is_frozen_and_cannot_escape_to_smoke(resume_checkpoint, monkeypatch):
+    train, cfg, checkpoint, _, reader = resume_checkpoint
+    latest = checkpoint.parent / (cfg["run_id"] + "-latest")
+    cfg["training"]["resume_from"] = str(latest)
+    original = Path.resolve
+    # Exercise alias authentication without Windows symlink privilege requirements.
+    monkeypatch.setattr(Path, "resolve", lambda self, **kw: checkpoint if self == latest else original(self, **kw))
+    assert train.validate_resume_checkpoint(cfg) == str(checkpoint)
+    reader.reset_mock()
+    cfg["training"]["resume_from"] = str(latest)
+    smoke = checkpoint.with_name(cfg["run_id"] + "-smoke-test-step2")
+    monkeypatch.setattr(Path, "resolve", lambda self, **kw: smoke if self == latest else original(self, **kw))
+    with pytest.raises(ValueError, match="never smoke"):
+        train.validate_resume_checkpoint(cfg)
+    reader.assert_not_called()
+
+
 def test_smoke_requires_unique_identity():
     with pytest.raises(ValueError):
         resolved_config(load_training_config(), smoke=True)
@@ -69,7 +175,9 @@ def test_content_addressed_features_and_exclusive_config(tmp_path):
 def test_no_duplicate_tracker_or_legacy_training_path():
     source = (ROOT / "training/train.py").read_text()
     assert "wandb.init" not in source
-    assert "specforge.train" not in source
+    assert '"specforge.train"' not in source
+    assert "'specforge.train'" not in source
+    assert "-m specforge.train" not in source
     assert "torchrun" not in source
 
 

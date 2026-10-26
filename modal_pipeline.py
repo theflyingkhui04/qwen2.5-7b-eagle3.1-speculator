@@ -13,7 +13,7 @@ import modal
 from training.train import (
     BEST_METRIC, REPO_ROOT, SPECFORGE_SHA, feature_counts, feature_paths,
     feature_selection, load_training_config,
-    resolved_config, sha256_file, verify_runtime, write_config,
+    resolved_config, sha256_file, validate_resume_checkpoint, verify_runtime, write_config,
 )
 from training.native_vocab_mapping import prepare_native_vocab_mapping, validate_native_vocab_mapping
 
@@ -135,7 +135,8 @@ def check_features(payload):
 
 
 @app.function(volumes={"/vol": volume}, secrets=[wandb_secret], timeout=7200)
-def preflight(mode="plan", execution=None, feature_scope="full", train_samples=None, eval_samples=None):
+def preflight(mode="plan", execution=None, feature_scope="full", train_samples=None, eval_samples=None,
+              resume=False, resume_from=None):
     """CPU only: resolve real upstream config/capture and inspect the immutable Volume."""
     from huggingface_hub import snapshot_download
     from transformers import AutoConfig, AutoTokenizer
@@ -218,6 +219,12 @@ def preflight(mode="plan", execution=None, feature_scope="full", train_samples=N
         elif mode == "features":
             check_features(payload)
             prepare_native_vocab_mapping(payload)
+            if resume:
+                if feature_scope != "full":
+                    raise ValueError("Canonical resume requires full feature scope")
+                cfg = resolved_config(cfg, resume=True, resume_from=resume_from)
+                validate_resume_checkpoint(cfg)
+                payload["config"] = cfg
         elif mode != "plan":
             raise ValueError("Unknown preflight mode")
         write_config(cfg, config_path)
@@ -275,7 +282,8 @@ def prepare_hidden_states(payload):
         volume.commit()
 
 
-@app.function(gpu="A100-80GB", volumes={"/vol": volume}, secrets=[wandb_secret], timeout=21600)
+# 12,000 remaining steps / ~675 steps/hour = 17.8h; allow eval/save/startup headroom.
+@app.function(gpu="A100-80GB", volumes={"/vol": volume}, secrets=[wandb_secret], timeout=22 * 3600)
 def train_specforge(payload, smoke=False, resume=False):
     import torch
     from training.train import run_specforge_training
@@ -284,14 +292,15 @@ def train_specforge(payload, smoke=False, resume=False):
     if smoke != (payload["contract"].get("feature_scope") == "smoke"):
         raise ValueError("Training mode and feature scope differ")
     validate_native_vocab_mapping(payload)
-    cfg = resolved_config(payload["config"], smoke=smoke, run_suffix=uuid.uuid4().hex[:10], resume=resume)
+    cfg = resolved_config(payload["config"], smoke=smoke, run_suffix=uuid.uuid4().hex[:10], resume=resume,
+                          resume_from=payload["config"]["training"].get("resume_from") if resume else None)
+    if resume:
+        validate_resume_checkpoint(cfg)
     output = Path(cfg["output_dir"])
     latest = output / (cfg["run_id"] + "-latest")
     existing = latest.exists() or latest.is_symlink() or any(output.glob(cfg["run_id"] + "-step*")) or (output / (cfg["run_id"] + ".best_meta.json")).exists()
     if existing and not resume:
         raise FileExistsError("Run exists; use explicit --resume or a new run_id")
-    if resume and not latest.exists():
-        raise FileNotFoundError("Requested resume checkpoint is absent")
     evidence = Path(payload["evidence"])
     cfg["tracking"]["wandb_dir"] = str(evidence / "wandb")
     Path(cfg["tracking"]["wandb_dir"]).mkdir(exist_ok=False)
@@ -309,11 +318,18 @@ def train_specforge(payload, smoke=False, resume=False):
         volume.commit()
 
 
+@app.function(gpu="A100-80GB", volumes={"/vol": volume}, secrets=[wandb_secret], timeout=21600)
+def smoke_specforge(payload, resume=False):
+    return train_specforge.local(payload, smoke=True, resume=resume)
+
+
 @app.local_entrypoint()
 def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
-         train_samples: int | None = None, eval_samples: int | None = None):
+         train_samples: int | None = None, eval_samples: int | None = None, resume_from: str = ""):
     if step not in {"plan", "dataset_check", "prepare_hidden_states", "smoke", "train"}:
         raise ValueError("Choose plan, dataset_check, prepare_hidden_states, smoke, train")
+    if (resume or resume_from) and (step != "train" or not resume):
+        raise ValueError("Resume is supported only for canonical train with explicit --resume")
     scope = feature_scope or ("smoke" if step == "smoke" else "full")
     if (step == "smoke" and scope != "smoke") or (step == "train" and scope != "full"):
         raise ValueError("Smoke training requires smoke scope; full training requires full scope")
@@ -327,5 +343,10 @@ def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
         result = preflight.remote(mode="prepare", execution=execution, **options)
         prepare_hidden_states.remote(result)
     else:
+        if resume:
+            options.update(resume=True, resume_from=resume_from or None)
         result = preflight.remote(mode="features", execution=execution, **options)
-        train_specforge.remote(result, smoke=step == "smoke", resume=resume)
+        if step == "smoke":
+            smoke_specforge.remote(result, resume=False)
+        else:
+            train_specforge.remote(result, smoke=False, resume=resume)

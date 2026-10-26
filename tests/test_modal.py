@@ -25,6 +25,7 @@ def pipeline(monkeypatch):
             def decorate(fn):
                 fn.options = options
                 fn.remote = MagicMock()
+                fn.local = fn
                 return fn
             return decorate
         def local_entrypoint(self):
@@ -95,7 +96,86 @@ def test_gpu_training_requires_cpu_feature_preflight(pipeline, step):
         feature_scope="smoke" if step == "smoke" else "full",
         train_samples=None, eval_samples=None,
     )
-    module.train_specforge.remote.assert_called_once_with(payload, smoke=step == "smoke", resume=False)
+    if step == "smoke":
+        module.smoke_specforge.remote.assert_called_once_with(payload, resume=False)
+        module.train_specforge.remote.assert_not_called()
+    else:
+        module.train_specforge.remote.assert_called_once_with(payload, smoke=False, resume=False)
+
+
+def test_canonical_timeout_and_unchanged_smoke_resources(pipeline):
+    module, _, _ = pipeline
+    assert module.train_specforge.options["timeout"] == 79200
+    assert module.smoke_specforge.options["timeout"] == 21600
+    assert module.prepare_hidden_states.options["timeout"] == 21600
+    assert {k: v for k, v in module.train_specforge.options.items() if k != "timeout"} == {
+        k: v for k, v in module.smoke_specforge.options.items() if k != "timeout"}
+
+
+def test_explicit_resume_dispatch_is_cpu_gated(pipeline):
+    module, _, _ = pipeline
+    path = "/vol/checkpoints/qwen2.5-7b-eagle3.1/m3-04-qwen2.5-7b-eagle3.1-step3000"
+    module.main(step="train", resume=True, resume_from=path)
+    assert module.preflight.remote.call_args.kwargs["resume_from"] == path
+    assert module.preflight.remote.call_args.kwargs["resume"] is True
+    module.train_specforge.remote.assert_called_once_with(
+        module.preflight.remote.return_value, smoke=False, resume=True)
+
+
+def test_failed_resume_preflight_cannot_dispatch_gpu(pipeline):
+    module, _, _ = pipeline
+    module.preflight.remote.side_effect = ValueError("Resume checkpoint identity mismatch")
+    with pytest.raises(ValueError, match="identity"):
+        module.main(step="train", resume=True)
+    module.train_specforge.remote.assert_not_called()
+    module.smoke_specforge.remote.assert_not_called()
+
+
+def test_smoke_wrapper_calls_same_training_body_locally(pipeline, monkeypatch):
+    module, _, _ = pipeline
+    body = MagicMock()
+    monkeypatch.setattr(module.train_specforge, "local", body)
+    payload = {"contract": {"feature_scope": "smoke"}}
+    module.smoke_specforge(payload)
+    body.assert_called_once_with(payload, smoke=True, resume=False)
+    module.train_specforge.remote.assert_not_called()
+
+
+def test_resume_execution_yaml_retains_concrete_anchor(pipeline, tmp_path, monkeypatch):
+    import torch
+    from training.train import load_training_config, resolved_config
+    module, modal, _ = pipeline
+    cfg = load_training_config()
+    cfg["output_dir"] = str(tmp_path / "checkpoints")
+    path = str(Path(cfg["output_dir"]) / (cfg["run_id"] + "-step3000"))
+    cfg = resolved_config(cfg, resume=True, resume_from=path)
+    payload = {"config": cfg, "contract": {}, "evidence": str(tmp_path)}
+    monkeypatch.setattr(module, "verify_runtime", lambda **kw: None)
+    monkeypatch.setattr(module, "validate_native_vocab_mapping", lambda value: None)
+    guard = MagicMock()
+    monkeypatch.setattr(module, "validate_resume_checkpoint", guard)
+    monkeypatch.setattr(modal, "current_function_call_id", lambda: "CPU mock", raising=False)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device: "CPU mock")
+    launch = MagicMock()
+    monkeypatch.setattr("training.train.run_specforge_training", launch)
+    module.train_specforge(payload, resume=True)
+    guard.assert_called_once()
+    execution = load_training_config(launch.call_args.args[0])
+    assert execution["training"]["resume_from"] == path
+    expected = resolved_config(cfg, resume=True, resume_from=path)
+    expected["tracking"]["wandb_dir"] = str(tmp_path / "wandb")
+    assert execution == expected
+    assert "draft_checkpoint_path" not in execution["model"]
+
+
+@pytest.mark.parametrize("step,resume,path", [("smoke", True, ""), ("plan", True, ""),
+                                               ("train", False, "/wrong")])
+def test_invalid_resume_dispatch_never_calls_remote(pipeline, step, resume, path):
+    module, _, _ = pipeline
+    with pytest.raises(ValueError, match="Resume"):
+        module.main(step=step, resume=resume, resume_from=path)
+    module.preflight.remote.assert_not_called()
+    module.train_specforge.remote.assert_not_called()
 
 
 def test_invalid_step_cannot_fall_through_to_training(pipeline):

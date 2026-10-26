@@ -37,7 +37,9 @@ def build_specforge_command(config_path, *, plan=False):
     return cmd
 
 
-def resolved_config(cfg, *, smoke=False, run_suffix=None, resume=False):
+def resolved_config(cfg, *, smoke=False, run_suffix=None, resume=False, resume_from=None):
+    if resume_from and not resume:
+        raise ValueError("resume_from requires explicit resume")
     cfg = copy.deepcopy(cfg)
     if smoke:
         if not run_suffix:
@@ -46,8 +48,40 @@ def resolved_config(cfg, *, smoke=False, run_suffix=None, resume=False):
         cfg["tracking"]["wandb_name"] = cfg["run_id"]
         cfg["training"].update(max_steps=2, eval_interval=1, save_interval=1)
     if resume:
-        cfg["training"]["resume_from"] = str(Path(cfg["output_dir"]) / (cfg["run_id"] + "-latest"))
+        cfg["training"]["resume_from"] = resume_from or str(Path(cfg["output_dir"]) / (cfg["run_id"] + "-latest"))
     return cfg
+
+
+def validate_resume_checkpoint(cfg):
+    """CPU-only same-run guard using the pinned SpecForge full-state reader."""
+    from specforge.training.checkpoint import CheckpointManager
+
+    canonical = load_training_config(REPO_ROOT / "configs/train_config.yaml")
+    if (cfg["output_dir"] != canonical["output_dir"] or cfg["run_id"] != canonical["run_id"]
+            or cfg["deployment"]["trainer"] != canonical["deployment"]["trainer"]):
+        raise ValueError("Resume requires the canonical output namespace, run id and topology")
+    output = Path(cfg["output_dir"])
+    selected = Path(cfg["training"]["resume_from"])
+    # Permit the shared /vol mount to resolve, but never escape its checkpoint root.
+    if selected.parent != output:
+        raise ValueError("Resume checkpoint is outside the canonical output namespace")
+    checkpoint = selected.resolve(strict=True)
+    match = re.fullmatch(re.escape(cfg["run_id"]) + r"-step([1-9][0-9]*)", checkpoint.name)
+    if checkpoint.parent != output.resolve(strict=True) or not match:
+        raise ValueError("Resume must resolve to a canonical run step, never smoke or another run")
+    if selected.name not in {checkpoint.name, cfg["run_id"] + "-latest"}:
+        raise ValueError("Select an explicit canonical step or its latest alias")
+    # Native reader requires both shared state and usable rank-0 optimizer/RNG shard.
+    state = CheckpointManager.read_resume_state(str(checkpoint), map_location="cpu", require_full_state=True)
+    if (state.get("run_id") != cfg["run_id"] or state.get("global_step") != int(match[1])
+            or state.get("world_size") != 1 or state.get("strategy") != cfg["training"]["strategy"]):
+        raise ValueError("Resume checkpoint identity, step, strategy or world size mismatch")
+    backend = state.get("backend", {})
+    if backend.get("optimizer") is None or not backend.get("rng"):
+        raise ValueError("Resume requires full optimizer and RNG state")
+    # Freeze the concrete directory, avoiding a mutable latest alias at execution.
+    cfg["training"]["resume_from"] = str(output / checkpoint.name)
+    return cfg["training"]["resume_from"]
 
 
 def artifact_contract(cfg, draft_path):
