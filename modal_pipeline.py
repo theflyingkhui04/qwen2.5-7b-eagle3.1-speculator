@@ -353,9 +353,12 @@ def smoke_specforge(payload, resume=False):
 
 @app.local_entrypoint()
 def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
-         train_samples: int | None = None, eval_samples: int | None = None, resume_from: str = ""):
-    if step not in {"plan", "dataset_check", "prepare_hidden_states", "smoke", "train"}:
-        raise ValueError("Choose plan, dataset_check, prepare_hidden_states, smoke, train")
+         train_samples: int | None = None, eval_samples: int | None = None, resume_from: str = "",
+         compile_mode_ab: bool = False):
+    if compile_mode_ab and step != "flex_attention_ab":
+        raise ValueError("Compile-mode A/B requires explicit flex_attention_ab diagnostic")
+    if step not in {"plan", "dataset_check", "prepare_hidden_states", "smoke", "train", "flex_attention_ab", "optimizer_step_ab"}:
+        raise ValueError("Choose plan, dataset_check, prepare_hidden_states, smoke, train, flex_attention_ab, optimizer_step_ab")
     if (resume or resume_from) and (step != "train" or not resume):
         raise ValueError("Resume is supported only for canonical train with explicit --resume")
     scope = feature_scope or ("smoke" if step == "smoke" else "full")
@@ -364,6 +367,18 @@ def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
     feature_selection(scope, train_samples, eval_samples)
     options = {"feature_scope": scope, "train_samples": train_samples, "eval_samples": eval_samples}
     execution = execution_source()
+    if step == "optimizer_step_ab":
+        if scope != "full":
+            raise ValueError("Optimizer-step benchmark requires existing full TRAIN features")
+        print(json.dumps(optimizer_step_ab.remote(execution)))
+        return
+    if step == "flex_attention_ab":
+        if scope != "full":
+            raise ValueError("Diagnostic requires existing full TRAIN features")
+        result = (flex_attention_ab.remote(execution, compile_mode_ab=True) if compile_mode_ab
+                  else flex_attention_ab.remote(execution))
+        print(json.dumps(result))
+        return
     if step in {"plan", "dataset_check"}:
         result = preflight.remote(mode="plan", execution=execution, **options)
         print(json.dumps({"status": result["status"], "evidence": result["evidence"], "capture_layers": result["capture_layers"]}))
@@ -378,3 +393,54 @@ def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
             smoke_specforge.remote(result, resume=False)
         else:
             train_specforge.remote(result, smoke=False, resume=resume)
+
+
+@app.function(gpu="A100-80GB", volumes={"/vol": volume}, timeout=1800)
+def flex_attention_ab(execution, compile_mode_ab=False):
+    """Explicit non-canonical replay; no training entrypoint or W&B secret."""
+    from training.flex_attention_ab import record_diagnostic_hardware, run_diagnostic
+
+    volume.reload()
+    evidence = Path("/vol/runs/m3-04/non-canonical/flex_attention_ab") / (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
+    evidence.mkdir(parents=True, exist_ok=False)
+    report = {"status": "ERROR", "semantic_equivalence": "UNDECIDED", "execution": execution,
+              "evidence": str(evidence), "modal_function_call_id": modal.current_function_call_id()}
+    try:
+        record_diagnostic_hardware(report)  # Preserve identity even if software verification fails.
+        report["versions"] = verify_runtime(check_toolchain=True)
+        if compile_mode_ab:
+            run_diagnostic(report, check_features, compile_mode_ab=True)
+        else:
+            run_diagnostic(report, check_features)
+        report["status"] = "EXECUTED"
+    except Exception as exc:
+        import traceback
+        report["exception"] = {"type": type(exc).__name__, "message": str(exc),
+                               "traceback": traceback.format_exc()}
+        raise
+    finally:
+        save_json(evidence / "diagnostic.json", report)
+        volume.commit()
+    return {key: report[key] for key in ("status", "semantic_equivalence", "evidence")}
+
+
+@app.function(gpu="A100-80GB", volumes={"/vol": volume}, timeout=3600)
+def optimizer_step_ab(execution):
+    """Non-canonical native training A/B; no W&B secret or canonical launcher."""
+    from training.optimizer_step_ab import NAMESPACE, run_benchmark, validated_config
+    volume.reload()
+    evidence = NAMESPACE / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex)
+    evidence.mkdir(parents=True, exist_ok=False)
+    report = {"classification": "BENCHMARK INVALID", "execution": execution, "evidence": str(evidence),
+              "modal_function_call_id": modal.current_function_call_id()}
+    try:
+        report["versions"] = verify_runtime(check_toolchain=True)
+        run_benchmark(validated_config(check_features), evidence, report)
+    except Exception as exc:
+        report["exception"] = {"type": type(exc).__name__, "message": str(exc)}
+        raise
+    finally:
+        save_json(evidence / "benchmark.json", report)
+        volume.commit()
+    return {key: report[key] for key in ("classification", "evidence", "canonical_state_unchanged")}

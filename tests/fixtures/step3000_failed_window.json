@@ -1,0 +1,1185 @@
+{
+  "source_benchmark": "/vol/runs/m3-04/non-canonical/optimizer_step_ab/20261028T051832Z-234eca59d6ec4308bb17289aa47ae376",
+  "source_benchmark_sha256": "0659ac10cfd59b07569affd27405fbb1b0da7a3d033f2e5f5fbbf1115d061a63",
+  "state": {
+    "global_step": 3000,
+    "epoch": 0,
+    "epoch_batch": 12000,
+    "epoch_samples": 24000,
+    "strategy": "eagle3",
+    "run_id": "m3-04-qwen2.5-7b-eagle3.1",
+    "world_size": 1,
+    "dataset_size": 40000,
+    "source_dataset_size": 40000,
+    "batch_size": 2,
+    "accumulation_steps": 4,
+    "num_epochs": 3,
+    "effective_total_steps": 15000,
+    "offline_sampler_version": 1,
+    "sampler_seed": 42,
+    "eagle3_ttt_length": 5,
+    "eagle3_attention_backend": "flex_attention",
+    "tp_size": 1,
+    "sp_ulysses_size": 1,
+    "sp_ring_size": 1
+  },
+  "config": {
+    "run_id": "m3-04-qwen2.5-7b-eagle3.1",
+    "training": {
+      "accumulation_steps": 4,
+      "attention_backend": "flex_attention",
+      "batch_size": 2,
+      "eval_interval": 1000,
+      "learning_rate": 0.0001,
+      "max_checkpoints": 2,
+      "num_epochs": 3,
+      "resume_from": "/vol/checkpoints/qwen2.5-7b-eagle3.1/m3-04-qwen2.5-7b-eagle3.1-step3000",
+      "save_interval": 1000,
+      "strategy": "eagle3",
+      "ttt_length": 5
+    }
+  },
+  "raw": {
+    "data_plan": [
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00024245"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00001509"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00028228"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00012640"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00026864"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00000507"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00018165"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00022666"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00024370"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00015589"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00033352"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00031123"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00031410"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00027450"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00039351"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00023202"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00027092"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00011133"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00008349"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00002963"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00008518"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00031212"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00002066"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00008324"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00033302"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00025399"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00007524"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00026704"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00014964"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00036550"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00031768"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00032140"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00003469"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00022139"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00025950"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00035244"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00009858"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00014290"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00030919"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00022354"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00028031"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00022793"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00001274"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00036728"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00037794"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00034561"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00006352"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00009749"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00011004"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00003366"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00003738"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00011316"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00004596"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00034977"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00022914"
+      },
+      {
+        "sample_id": "m3-04-qwen2.5-7b-eagle3.1:00037951"
+      }
+    ],
+    "warmup": [
+      {
+        "data_identity": [
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00024245",
+              "m3-04-qwen2.5-7b-eagle3.1:00001509"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00028228",
+              "m3-04-qwen2.5-7b-eagle3.1:00012640"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00026864",
+              "m3-04-qwen2.5-7b-eagle3.1:00000507"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00018165",
+              "m3-04-qwen2.5-7b-eagle3.1:00022666"
+            ]
+          }
+        ],
+        "short_calls": []
+      },
+      {
+        "data_identity": [
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00024370",
+              "m3-04-qwen2.5-7b-eagle3.1:00015589"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00033352",
+              "m3-04-qwen2.5-7b-eagle3.1:00031123"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00031410",
+              "m3-04-qwen2.5-7b-eagle3.1:00027450"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00039351",
+              "m3-04-qwen2.5-7b-eagle3.1:00023202"
+            ]
+          }
+        ],
+        "short_calls": []
+      }
+    ],
+    "steps": [
+      {
+        "data_identity": [
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00027092",
+              "m3-04-qwen2.5-7b-eagle3.1:00011133"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00008349",
+              "m3-04-qwen2.5-7b-eagle3.1:00002963"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00008518",
+              "m3-04-qwen2.5-7b-eagle3.1:00031212"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00002066",
+              "m3-04-qwen2.5-7b-eagle3.1:00008324"
+            ]
+          }
+        ],
+        "short_calls": []
+      },
+      {
+        "data_identity": [
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00033302",
+              "m3-04-qwen2.5-7b-eagle3.1:00025399"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00007524",
+              "m3-04-qwen2.5-7b-eagle3.1:00026704"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00014964",
+              "m3-04-qwen2.5-7b-eagle3.1:00036550"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00031768",
+              "m3-04-qwen2.5-7b-eagle3.1:00032140"
+            ]
+          }
+        ],
+        "short_calls": []
+      },
+      {
+        "data_identity": [
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00003469",
+              "m3-04-qwen2.5-7b-eagle3.1:00022139"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00025950",
+              "m3-04-qwen2.5-7b-eagle3.1:00035244"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00009858",
+              "m3-04-qwen2.5-7b-eagle3.1:00014290"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00030919",
+              "m3-04-qwen2.5-7b-eagle3.1:00022354"
+            ]
+          }
+        ],
+        "short_calls": []
+      },
+      {
+        "data_identity": [
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00028031",
+              "m3-04-qwen2.5-7b-eagle3.1:00022793"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00001274",
+              "m3-04-qwen2.5-7b-eagle3.1:00036728"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00037794",
+              "m3-04-qwen2.5-7b-eagle3.1:00034561"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00006352",
+              "m3-04-qwen2.5-7b-eagle3.1:00009749"
+            ]
+          }
+        ],
+        "short_calls": []
+      },
+      {
+        "data_identity": [
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00011004",
+              "m3-04-qwen2.5-7b-eagle3.1:00003366"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00003738",
+              "m3-04-qwen2.5-7b-eagle3.1:00011316"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00004596",
+              "m3-04-qwen2.5-7b-eagle3.1:00034977"
+            ]
+          },
+          {
+            "sample_ids": [
+              "m3-04-qwen2.5-7b-eagle3.1:00022914",
+              "m3-04-qwen2.5-7b-eagle3.1:00037951"
+            ]
+          }
+        ],
+        "short_calls": []
+      }
+    ]
+  },
+  "width_rows": [
+    {
+      "relative_microbatch_offset": 0,
+      "relative_optimizer_step_offset": 0,
+      "optimizer_step_number_after_resume": 1,
+      "global_optimizer_step": 3001,
+      "accumulation_slot": 0,
+      "epoch": 0,
+      "epoch_batch": 12000,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00024245",
+        "m3-04-qwen2.5-7b-eagle3.1:00001509"
+      ],
+      "feature_indices": [
+        24245,
+        1509
+      ],
+      "capture_rows": [
+        30245,
+        557
+      ],
+      "effective_lengths": [
+        2048,
+        271
+      ],
+      "q_len": 2048,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 1,
+      "relative_optimizer_step_offset": 0,
+      "optimizer_step_number_after_resume": 1,
+      "global_optimizer_step": 3001,
+      "accumulation_slot": 1,
+      "epoch": 0,
+      "epoch_batch": 12001,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00028228",
+        "m3-04-qwen2.5-7b-eagle3.1:00012640"
+      ],
+      "feature_indices": [
+        28228,
+        12640
+      ],
+      "capture_rows": [
+        34228,
+        2640
+      ],
+      "effective_lengths": [
+        149,
+        2048
+      ],
+      "q_len": 2048,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 2,
+      "relative_optimizer_step_offset": 0,
+      "optimizer_step_number_after_resume": 1,
+      "global_optimizer_step": 3001,
+      "accumulation_slot": 2,
+      "epoch": 0,
+      "epoch_batch": 12002,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00026864",
+        "m3-04-qwen2.5-7b-eagle3.1:00000507"
+      ],
+      "feature_indices": [
+        26864,
+        507
+      ],
+      "capture_rows": [
+        32864,
+        1454
+      ],
+      "effective_lengths": [
+        2048,
+        2048
+      ],
+      "q_len": 2048,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 3,
+      "relative_optimizer_step_offset": 0,
+      "optimizer_step_number_after_resume": 1,
+      "global_optimizer_step": 3001,
+      "accumulation_slot": 3,
+      "epoch": 0,
+      "epoch_batch": 12003,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00018165",
+        "m3-04-qwen2.5-7b-eagle3.1:00022666"
+      ],
+      "feature_indices": [
+        18165,
+        22666
+      ],
+      "capture_rows": [
+        24165,
+        28666
+      ],
+      "effective_lengths": [
+        241,
+        2048
+      ],
+      "q_len": 2048,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 4,
+      "relative_optimizer_step_offset": 1,
+      "optimizer_step_number_after_resume": 2,
+      "global_optimizer_step": 3002,
+      "accumulation_slot": 0,
+      "epoch": 0,
+      "epoch_batch": 12004,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00024370",
+        "m3-04-qwen2.5-7b-eagle3.1:00015589"
+      ],
+      "feature_indices": [
+        24370,
+        15589
+      ],
+      "capture_rows": [
+        30370,
+        21589
+      ],
+      "effective_lengths": [
+        2015,
+        342
+      ],
+      "q_len": 2015,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 5,
+      "relative_optimizer_step_offset": 1,
+      "optimizer_step_number_after_resume": 2,
+      "global_optimizer_step": 3002,
+      "accumulation_slot": 1,
+      "epoch": 0,
+      "epoch_batch": 12005,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00033352",
+        "m3-04-qwen2.5-7b-eagle3.1:00031123"
+      ],
+      "feature_indices": [
+        33352,
+        31123
+      ],
+      "capture_rows": [
+        39352,
+        37123
+      ],
+      "effective_lengths": [
+        628,
+        474
+      ],
+      "q_len": 628,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 6,
+      "relative_optimizer_step_offset": 1,
+      "optimizer_step_number_after_resume": 2,
+      "global_optimizer_step": 3002,
+      "accumulation_slot": 2,
+      "epoch": 0,
+      "epoch_batch": 12006,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00031410",
+        "m3-04-qwen2.5-7b-eagle3.1:00027450"
+      ],
+      "feature_indices": [
+        31410,
+        27450
+      ],
+      "capture_rows": [
+        37410,
+        33450
+      ],
+      "effective_lengths": [
+        352,
+        2048
+      ],
+      "q_len": 2048,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 7,
+      "relative_optimizer_step_offset": 1,
+      "optimizer_step_number_after_resume": 2,
+      "global_optimizer_step": 3002,
+      "accumulation_slot": 3,
+      "epoch": 0,
+      "epoch_batch": 12007,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00039351",
+        "m3-04-qwen2.5-7b-eagle3.1:00023202"
+      ],
+      "feature_indices": [
+        39351,
+        23202
+      ],
+      "capture_rows": [
+        9351,
+        29202
+      ],
+      "effective_lengths": [
+        403,
+        101
+      ],
+      "q_len": 403,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 8,
+      "relative_optimizer_step_offset": 2,
+      "optimizer_step_number_after_resume": 3,
+      "global_optimizer_step": 3003,
+      "accumulation_slot": 0,
+      "epoch": 0,
+      "epoch_batch": 12008,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00027092",
+        "m3-04-qwen2.5-7b-eagle3.1:00011133"
+      ],
+      "feature_indices": [
+        27092,
+        11133
+      ],
+      "capture_rows": [
+        33092,
+        19133
+      ],
+      "effective_lengths": [
+        449,
+        72
+      ],
+      "q_len": 449,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 9,
+      "relative_optimizer_step_offset": 2,
+      "optimizer_step_number_after_resume": 3,
+      "global_optimizer_step": 3003,
+      "accumulation_slot": 1,
+      "epoch": 0,
+      "epoch_batch": 12009,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00008349",
+        "m3-04-qwen2.5-7b-eagle3.1:00002963"
+      ],
+      "feature_indices": [
+        8349,
+        2963
+      ],
+      "capture_rows": [
+        16349,
+        10963
+      ],
+      "effective_lengths": [
+        166,
+        872
+      ],
+      "q_len": 872,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 10,
+      "relative_optimizer_step_offset": 2,
+      "optimizer_step_number_after_resume": 3,
+      "global_optimizer_step": 3003,
+      "accumulation_slot": 2,
+      "epoch": 0,
+      "epoch_batch": 12010,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00008518",
+        "m3-04-qwen2.5-7b-eagle3.1:00031212"
+      ],
+      "feature_indices": [
+        8518,
+        31212
+      ],
+      "capture_rows": [
+        16518,
+        37212
+      ],
+      "effective_lengths": [
+        218,
+        155
+      ],
+      "q_len": 218,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 11,
+      "relative_optimizer_step_offset": 2,
+      "optimizer_step_number_after_resume": 3,
+      "global_optimizer_step": 3003,
+      "accumulation_slot": 3,
+      "epoch": 0,
+      "epoch_batch": 12011,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00002066",
+        "m3-04-qwen2.5-7b-eagle3.1:00008324"
+      ],
+      "feature_indices": [
+        2066,
+        8324
+      ],
+      "capture_rows": [
+        10066,
+        16324
+      ],
+      "effective_lengths": [
+        728,
+        874
+      ],
+      "q_len": 874,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 12,
+      "relative_optimizer_step_offset": 3,
+      "optimizer_step_number_after_resume": 4,
+      "global_optimizer_step": 3004,
+      "accumulation_slot": 0,
+      "epoch": 0,
+      "epoch_batch": 12012,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00033302",
+        "m3-04-qwen2.5-7b-eagle3.1:00025399"
+      ],
+      "feature_indices": [
+        33302,
+        25399
+      ],
+      "capture_rows": [
+        39302,
+        31399
+      ],
+      "effective_lengths": [
+        1660,
+        339
+      ],
+      "q_len": 1660,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 13,
+      "relative_optimizer_step_offset": 3,
+      "optimizer_step_number_after_resume": 4,
+      "global_optimizer_step": 3004,
+      "accumulation_slot": 1,
+      "epoch": 0,
+      "epoch_batch": 12013,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00007524",
+        "m3-04-qwen2.5-7b-eagle3.1:00026704"
+      ],
+      "feature_indices": [
+        7524,
+        26704
+      ],
+      "capture_rows": [
+        15524,
+        32704
+      ],
+      "effective_lengths": [
+        987,
+        351
+      ],
+      "q_len": 987,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 14,
+      "relative_optimizer_step_offset": 3,
+      "optimizer_step_number_after_resume": 4,
+      "global_optimizer_step": 3004,
+      "accumulation_slot": 2,
+      "epoch": 0,
+      "epoch_batch": 12014,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00014964",
+        "m3-04-qwen2.5-7b-eagle3.1:00036550"
+      ],
+      "feature_indices": [
+        14964,
+        36550
+      ],
+      "capture_rows": [
+        20964,
+        6550
+      ],
+      "effective_lengths": [
+        422,
+        59
+      ],
+      "q_len": 422,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 15,
+      "relative_optimizer_step_offset": 3,
+      "optimizer_step_number_after_resume": 4,
+      "global_optimizer_step": 3004,
+      "accumulation_slot": 3,
+      "epoch": 0,
+      "epoch_batch": 12015,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00031768",
+        "m3-04-qwen2.5-7b-eagle3.1:00032140"
+      ],
+      "feature_indices": [
+        31768,
+        32140
+      ],
+      "capture_rows": [
+        37768,
+        38140
+      ],
+      "effective_lengths": [
+        1397,
+        441
+      ],
+      "q_len": 1397,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 16,
+      "relative_optimizer_step_offset": 4,
+      "optimizer_step_number_after_resume": 5,
+      "global_optimizer_step": 3005,
+      "accumulation_slot": 0,
+      "epoch": 0,
+      "epoch_batch": 12016,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00003469",
+        "m3-04-qwen2.5-7b-eagle3.1:00022139"
+      ],
+      "feature_indices": [
+        3469,
+        22139
+      ],
+      "capture_rows": [
+        11469,
+        28139
+      ],
+      "effective_lengths": [
+        309,
+        471
+      ],
+      "q_len": 471,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 17,
+      "relative_optimizer_step_offset": 4,
+      "optimizer_step_number_after_resume": 5,
+      "global_optimizer_step": 3005,
+      "accumulation_slot": 1,
+      "epoch": 0,
+      "epoch_batch": 12017,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00025950",
+        "m3-04-qwen2.5-7b-eagle3.1:00035244"
+      ],
+      "feature_indices": [
+        25950,
+        35244
+      ],
+      "capture_rows": [
+        31950,
+        5244
+      ],
+      "effective_lengths": [
+        177,
+        265
+      ],
+      "q_len": 265,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 18,
+      "relative_optimizer_step_offset": 4,
+      "optimizer_step_number_after_resume": 5,
+      "global_optimizer_step": 3005,
+      "accumulation_slot": 2,
+      "epoch": 0,
+      "epoch_batch": 12018,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00009858",
+        "m3-04-qwen2.5-7b-eagle3.1:00014290"
+      ],
+      "feature_indices": [
+        9858,
+        14290
+      ],
+      "capture_rows": [
+        17858,
+        20290
+      ],
+      "effective_lengths": [
+        735,
+        238
+      ],
+      "q_len": 735,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 19,
+      "relative_optimizer_step_offset": 4,
+      "optimizer_step_number_after_resume": 5,
+      "global_optimizer_step": 3005,
+      "accumulation_slot": 3,
+      "epoch": 0,
+      "epoch_batch": 12019,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00030919",
+        "m3-04-qwen2.5-7b-eagle3.1:00022354"
+      ],
+      "feature_indices": [
+        30919,
+        22354
+      ],
+      "capture_rows": [
+        36919,
+        28354
+      ],
+      "effective_lengths": [
+        131,
+        172
+      ],
+      "q_len": 172,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 20,
+      "relative_optimizer_step_offset": 5,
+      "optimizer_step_number_after_resume": 6,
+      "global_optimizer_step": 3006,
+      "accumulation_slot": 0,
+      "epoch": 0,
+      "epoch_batch": 12020,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00028031",
+        "m3-04-qwen2.5-7b-eagle3.1:00022793"
+      ],
+      "feature_indices": [
+        28031,
+        22793
+      ],
+      "capture_rows": [
+        34031,
+        28793
+      ],
+      "effective_lengths": [
+        367,
+        159
+      ],
+      "q_len": 367,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 21,
+      "relative_optimizer_step_offset": 5,
+      "optimizer_step_number_after_resume": 6,
+      "global_optimizer_step": 3006,
+      "accumulation_slot": 1,
+      "epoch": 0,
+      "epoch_batch": 12021,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00001274",
+        "m3-04-qwen2.5-7b-eagle3.1:00036728"
+      ],
+      "feature_indices": [
+        1274,
+        36728
+      ],
+      "capture_rows": [
+        345,
+        6728
+      ],
+      "effective_lengths": [
+        450,
+        2048
+      ],
+      "q_len": 2048,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 22,
+      "relative_optimizer_step_offset": 5,
+      "optimizer_step_number_after_resume": 6,
+      "global_optimizer_step": 3006,
+      "accumulation_slot": 2,
+      "epoch": 0,
+      "epoch_batch": 12022,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00037794",
+        "m3-04-qwen2.5-7b-eagle3.1:00034561"
+      ],
+      "feature_indices": [
+        37794,
+        34561
+      ],
+      "capture_rows": [
+        7794,
+        4561
+      ],
+      "effective_lengths": [
+        1940,
+        189
+      ],
+      "q_len": 1940,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 23,
+      "relative_optimizer_step_offset": 5,
+      "optimizer_step_number_after_resume": 6,
+      "global_optimizer_step": 3006,
+      "accumulation_slot": 3,
+      "epoch": 0,
+      "epoch_batch": 12023,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00006352",
+        "m3-04-qwen2.5-7b-eagle3.1:00009749"
+      ],
+      "feature_indices": [
+        6352,
+        9749
+      ],
+      "capture_rows": [
+        14352,
+        17749
+      ],
+      "effective_lengths": [
+        452,
+        536
+      ],
+      "q_len": 536,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 24,
+      "relative_optimizer_step_offset": 6,
+      "optimizer_step_number_after_resume": 7,
+      "global_optimizer_step": 3007,
+      "accumulation_slot": 0,
+      "epoch": 0,
+      "epoch_batch": 12024,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00011004",
+        "m3-04-qwen2.5-7b-eagle3.1:00003366"
+      ],
+      "feature_indices": [
+        11004,
+        3366
+      ],
+      "capture_rows": [
+        19004,
+        11366
+      ],
+      "effective_lengths": [
+        268,
+        165
+      ],
+      "q_len": 268,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 25,
+      "relative_optimizer_step_offset": 6,
+      "optimizer_step_number_after_resume": 7,
+      "global_optimizer_step": 3007,
+      "accumulation_slot": 1,
+      "epoch": 0,
+      "epoch_batch": 12025,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00003738",
+        "m3-04-qwen2.5-7b-eagle3.1:00011316"
+      ],
+      "feature_indices": [
+        3738,
+        11316
+      ],
+      "capture_rows": [
+        11738,
+        19316
+      ],
+      "effective_lengths": [
+        1565,
+        416
+      ],
+      "q_len": 1565,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 26,
+      "relative_optimizer_step_offset": 6,
+      "optimizer_step_number_after_resume": 7,
+      "global_optimizer_step": 3007,
+      "accumulation_slot": 2,
+      "epoch": 0,
+      "epoch_batch": 12026,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00004596",
+        "m3-04-qwen2.5-7b-eagle3.1:00034977"
+      ],
+      "feature_indices": [
+        4596,
+        34977
+      ],
+      "capture_rows": [
+        12596,
+        4977
+      ],
+      "effective_lengths": [
+        1871,
+        260
+      ],
+      "q_len": 1871,
+      "short_path": false
+    },
+    {
+      "relative_microbatch_offset": 27,
+      "relative_optimizer_step_offset": 6,
+      "optimizer_step_number_after_resume": 7,
+      "global_optimizer_step": 3007,
+      "accumulation_slot": 3,
+      "epoch": 0,
+      "epoch_batch": 12027,
+      "sample_ids": [
+        "m3-04-qwen2.5-7b-eagle3.1:00022914",
+        "m3-04-qwen2.5-7b-eagle3.1:00037951"
+      ],
+      "feature_indices": [
+        22914,
+        37951
+      ],
+      "capture_rows": [
+        28914,
+        7951
+      ],
+      "effective_lengths": [
+        1527,
+        339
+      ],
+      "q_len": 1527,
+      "short_path": false
+    }
+  ],
+  "canonical_source_sha256": {
+    "modal_pipeline.py": "1a5fdc4b058fb9434fe795a2fede8c8da69e56296107a8268d6dd481f08d0053",
+    "configs/train_config.yaml": "d135759b45aa1a4207d6f38ef91ae1bd8d8ca75ae1d4b21b92e83777bb992361",
+    "training/optimizer_step_ab.py": "6ae1c86012d1098ba67225781fd412fa2a997cfdba80944ef1845f4fe7a03d67",
+    "training/native_vocab_mapping.py": "c89113dce71da2114a829919ebdece140b21787676aa9cf6931ab584669021ea"
+  }
+}

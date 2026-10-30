@@ -11,6 +11,28 @@ from training.train import sha256_file
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_optimizer_step_ab_is_explicit_and_does_not_dispatch_train(pipeline):
+    module, _, _ = pipeline
+    module.optimizer_step_ab.remote.return_value = {"classification": "BENCHMARK INVALID"}
+    module.main(step="optimizer_step_ab")
+    module.optimizer_step_ab.remote.assert_called_once_with({"head": "test"})
+    module.train_specforge.remote.assert_not_called()
+    module.smoke_specforge.remote.assert_not_called()
+    module.preflight.remote.assert_not_called()
+    assert "secrets" not in module.optimizer_step_ab.options
+
+
+@pytest.mark.parametrize("options", [
+    {"feature_scope": "smoke"}, {"resume": True}, {"resume_from": "step3000"},
+    {"compile_mode_ab": True}, {"train_samples": 8},
+])
+def test_optimizer_step_ab_rejects_canonical_resume_selection_and_other_compile_modes(pipeline, options):
+    module, _, _ = pipeline
+    with pytest.raises(ValueError):
+        module.main(step="optimizer_step_ab", **options)
+    module.optimizer_step_ab.remote.assert_not_called()
+
+
 @pytest.fixture
 def pipeline(monkeypatch):
     image = MagicMock()
@@ -183,6 +205,100 @@ def test_invalid_step_cannot_fall_through_to_training(pipeline):
     with pytest.raises(ValueError):
         module.main(step="all")
     module.train_specforge.remote.assert_not_called()
+
+
+def test_flex_diagnostic_is_explicit_and_has_no_training_dispatch(pipeline):
+    module, _, _ = pipeline
+    module.flex_attention_ab.remote.return_value = {"status": "EXECUTED"}
+    module.main(step="flex_attention_ab")
+    module.flex_attention_ab.remote.assert_called_once_with({"head": "test"})
+    module.preflight.remote.assert_not_called()
+    module.train_specforge.remote.assert_not_called()
+    module.smoke_specforge.remote.assert_not_called()
+    assert module.flex_attention_ab.options == {
+        "gpu": "A100-80GB", "volumes": module.train_specforge.options["volumes"], "timeout": 1800}
+
+
+@pytest.mark.parametrize("kwargs", [{"resume": True}, {"resume_from": "/step3000"},
+                                    {"feature_scope": "smoke"}, {"train_samples": 2}])
+def test_flex_diagnostic_rejects_protocol_overrides(pipeline, kwargs):
+    module, _, _ = pipeline
+    with pytest.raises(ValueError):
+        module.main(step="flex_attention_ab", **kwargs)
+    module.flex_attention_ab.remote.assert_not_called()
+
+
+def test_compile_mode_ab_is_explicit_diagnostic_only(pipeline):
+    module, _, _ = pipeline
+    module.flex_attention_ab.remote.return_value = {"status": "EXECUTED"}
+    module.main(step="flex_attention_ab", compile_mode_ab=True)
+    module.flex_attention_ab.remote.assert_called_once_with({"head": "test"}, compile_mode_ab=True)
+    for step in ("plan", "smoke", "train"):
+        with pytest.raises(ValueError, match="explicit flex_attention_ab"):
+            module.main(step=step, compile_mode_ab=True)
+    module.train_specforge.remote.assert_not_called()
+
+
+def test_diagnostic_persists_failure_in_exclusive_namespace(pipeline, monkeypatch, tmp_path):
+    module, modal, _ = pipeline
+    import training.flex_attention_ab as diagnostic
+    # A CPU failure-path test must not query/initialize the host's real CUDA.
+    monkeypatch.setattr(diagnostic, "record_diagnostic_hardware", lambda report: None)
+    monkeypatch.setattr(module, "Path", lambda value: tmp_path if str(value).startswith("/vol/") else Path(value))
+    monkeypatch.setattr(module, "verify_runtime", lambda **kw: {})
+    monkeypatch.setattr(modal, "current_function_call_id", lambda: "CPU mock", raising=False)
+    def fail(report, checker):
+        raise RuntimeError("compiler failed")
+    monkeypatch.setattr(diagnostic, "run_diagnostic", fail)
+    with pytest.raises(RuntimeError, match="compiler failed"):
+        module.flex_attention_ab({"head": "test"})
+    artifacts = list(tmp_path.glob("*/diagnostic.json"))
+    assert len(artifacts) == 1
+    report = json.loads(artifacts[0].read_text())
+    assert report["semantic_equivalence"] == "UNDECIDED"
+    assert report["exception"]["type"] == "RuntimeError"
+    module.volume.commit.assert_called_once()
+
+
+@pytest.mark.parametrize("phase", ["software_verification", "diagnostic", "success"])
+def test_diagnostic_persists_hardware_identity_even_on_early_failure(pipeline, monkeypatch, tmp_path, phase):
+    module, modal, _ = pipeline
+    import training.flex_attention_ab as diagnostic
+    events = []
+    identity = {
+        "device_name": "NVIDIA A100 80GB PCIe", "total_memory_bytes": 80 * 1024 ** 3,
+        "compute_capability": [8, 0], "torch_cuda": "13.0", "device_count": 1,
+        "hardware_policy": "noncanonical_a100_80gb_diagnostic",
+        "performance_comparable_to_canonical_sxm4": False,
+        "performance_comparability_scope": "hardware_identity_only",
+    }
+    def hardware(report):
+        events.append("hardware")
+        report.update(identity)
+    def verify(**kwargs):
+        events.append("software_verification")
+        if phase == "software_verification":
+            raise RuntimeError("software failed")
+        return {}
+    def replay(report, checker):
+        events.append("diagnostic")
+        if phase == "diagnostic":
+            raise RuntimeError("diagnostic failed")
+    monkeypatch.setattr(module, "Path", lambda value: tmp_path if str(value).startswith("/vol/") else Path(value))
+    monkeypatch.setattr(modal, "current_function_call_id", lambda: "CPU mock", raising=False)
+    monkeypatch.setattr(diagnostic, "record_diagnostic_hardware", hardware)
+    monkeypatch.setattr(diagnostic, "run_diagnostic", replay)
+    monkeypatch.setattr(module, "verify_runtime", verify)
+    if phase == "success":
+        module.flex_attention_ab({"head": "test"})
+    else:
+        with pytest.raises(RuntimeError, match="failed"):
+            module.flex_attention_ab({"head": "test"})
+    report = json.loads(next(tmp_path.glob("*/diagnostic.json")).read_text())
+    assert {key: report[key] for key in identity} == identity
+    assert events[0] == "hardware" and events[1] == "software_verification"
+    assert report["status"] == ("EXECUTED" if phase == "success" else "ERROR")
+    module.volume.commit.assert_called_once()
 
 
 @pytest.fixture

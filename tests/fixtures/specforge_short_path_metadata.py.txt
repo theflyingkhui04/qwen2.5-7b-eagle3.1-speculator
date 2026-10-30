@@ -1,0 +1,43 @@
+# Unchanged CPU excerpts from sgl-project/SpecForge (Apache-2.0).
+# Pin: fddcb4ad37733a821708170df28cac2f7bb6ea05
+# Sources: specforge/launch.py and specforge/data/utils.py
+
+def _distributed_sampler_indices(size, *, dp_rank, dp_size, seed, epoch, shuffle=True):
+    """Reproduce ``DistributedSampler(drop_last=False)`` index generation."""
+    import math
+
+    import torch
+
+    if size <= 0:
+        return []
+    if shuffle:
+        generator = torch.Generator()
+        generator.manual_seed(int(seed) + int(epoch))
+        indices = torch.randperm(size, generator=generator).tolist()
+    else:
+        indices = list(range(size))
+
+    total_size = math.ceil(size / dp_size) * dp_size
+    padding_size = total_size - len(indices)
+    if padding_size:
+        repeats = math.ceil(padding_size / len(indices))
+        indices.extend((indices * repeats)[:padding_size])
+    return indices[dp_rank:total_size:dp_size]
+
+def paddingtensor2D(self, intensors: torch.Tensor, N: int) -> torch.Tensor:
+        """
+        Pad 2D tensor to the longest sequence in the batch.
+
+        Args:
+            intensors: (B, n)
+            N: the length to pad to, N >= n
+
+        Returns:
+            outtensors: (B, N)
+        """
+        B, n = intensors.shape
+        padding_tensor = torch.zeros(
+            B, N - n, dtype=intensors.dtype, device=intensors.device
+        )
+        outtensors = torch.cat((intensors, padding_tensor), dim=1)
+        return outtensors
