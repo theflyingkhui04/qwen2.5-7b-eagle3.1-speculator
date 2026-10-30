@@ -46,20 +46,48 @@ FEATURE_ROOT = Path("/vol/hidden_states/m3-04")
 SMOKE_FEATURE_ROOT = FEATURE_ROOT / "smoke"
 
 
-def execution_source():
+def execution_identity(source):
+    """Execution gate: exact Git revision and complete source-byte inventory.
+
+    Keep working_tree in reports as provenance, never as a source-integrity gate.
+    Missing fields fail closed; source_sha256 compares paths as well as digests.
+    """
+    return {key: source[key] for key in ("branch", "head", "source_sha256")}
+
+
+def execution_source(*, artifact_dir=None):
+    """Inventory the uploaded training package, configs and explicit data bridge.
+
+    Match add_local_python_source's recursive .py scope; exclude bytecode.
+    Configs are uploaded as a directory, so inventory all their files recursively.
+    Bounded profiler callers also authenticate their command/bootstrap/config.
+    The request holding the expected identity is the comparison baseline, not a
+    self-hashed input. Never upgrade an older request's inventory implicitly.
+    """
     root = str(REPO_ROOT)
-    def git(*args):
-        return subprocess.check_output(
-            ["git", "-c", f"safe.directory={root}", "-C", root, *args], text=True
-        ).strip()
-    files = ["modal_pipeline.py", "requirements.txt"] + [
-        str(p.relative_to(REPO_ROOT)).replace("\\", "/")
-        for folder in ("training", "configs")
-        for p in (REPO_ROOT / folder).glob("*") if p.is_file()
-    ] + ["data/prepare_specforge.py"]
+    def git(*args, text=True):
+        output = subprocess.check_output(
+            ["git", "-c", f"safe.directory={Path(root).as_posix()}", "-C", root, *args],
+            **({"text": True, "encoding": "utf-8"} if text else {}),
+        )
+        return output.strip() if text else output
+    files = ["modal_pipeline.py", "requirements.txt", "data/__init__.py", "data/prepare_specforge.py"]
+    files += [
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in (REPO_ROOT / "training").rglob("*.py")
+        if p.is_file()
+    ]
+    files += [p.relative_to(REPO_ROOT).as_posix()
+              for p in (REPO_ROOT / "configs").rglob("*") if p.is_file()]
+    if artifact_dir is not None:
+        directory = Path(artifact_dir).resolve()
+        files += [(directory / name).relative_to(REPO_ROOT).as_posix() for name in (
+            "future-gpu-command.txt", "remote-command.txt", "diagnostic.yaml",
+        )]
     return {
         "head": git("rev-parse", "HEAD"), "branch": git("branch", "--show-current"),
-        "working_tree": git("status", "--short"),
+        # Lossless JSON-safe bytes; no locale decoding, strip or newline conversion.
+        "working_tree": "porcelain-v1-z:" + git("status", "--porcelain=v1", "-z", text=False).hex(),
         "source_sha256": {p: sha256_file(REPO_ROOT / p) for p in sorted(files)},
     }
 
