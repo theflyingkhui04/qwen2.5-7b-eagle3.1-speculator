@@ -156,12 +156,82 @@ def write_config(cfg, path):
     return path
 
 
-def run_specforge_training(config_path, *, plan=False, dry_run=False):
+def run_specforge_training(config_path, *, plan=False, dry_run=False, target_step=None, max_runtime_seconds=None):
     cmd = build_specforge_command(config_path, plan=plan)
     if not dry_run:
         if sys.platform != "linux" or not Path("/vol").is_dir():
             raise RuntimeError("Use modal run modal_pipeline.py; runtime requires Modal Linux")
-        subprocess.run(cmd, check=True)
+        if target_step is None and max_runtime_seconds is None:
+            subprocess.run(cmd, check=True)
+            return cmd
+
+        import signal
+        import time
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+        )
+        start_time = time.time()
+        chk_dir = Path("/vol/checkpoints/qwen2.5-7b-eagle3.1")
+        target_chk = chk_dir / f"m3-04-qwen2.5-7b-eagle3.1-step{target_step}" if target_step else None
+        target_saved = False
+
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                print(line, end="", flush=True)
+                elapsed = time.time() - start_time
+
+                # Check if target checkpoint directory and complete state files exist on disk
+                if target_chk and target_chk.is_dir():
+                    rank0 = target_chk / "training_state_rank0.pt"
+                    state = target_chk / "training_state.pt"
+                    if rank0.exists() and state.exists():
+                        try:
+                            # Both files must be completely written (> 1GB and > 100MB)
+                            if rank0.stat().st_size > 1_000_000_000 and state.stat().st_size > 100_000_000:
+                                target_saved = True
+                        except OSError:
+                            pass
+
+                if target_saved:
+                    rank0 = target_chk / "training_state_rank0.pt"
+                    print(
+                        f"\n[AUTO-STOP VERIFIED] Checkpoint {target_chk.name} is 100% written on disk ({rank0.stat().st_size / 1e9:.2f} GB) at {elapsed/60:.1f} mins!",
+                        flush=True,
+                    )
+                    print(
+                        "[AUTO-STOP] Waiting 300 seconds (5 minutes) as requested to ensure all files, evaluation metrics, and volume commits are completely finalized...",
+                        flush=True,
+                    )
+                    time.sleep(300)
+                    print("[AUTO-STOP] Gracefully stopping SpecForge training now...", flush=True)
+                    proc.send_signal(signal.SIGINT)
+                    try:
+                        proc.wait(timeout=60)
+                    except subprocess.TimeoutExpired:
+                        proc.terminate()
+                        proc.wait(timeout=15)
+                    break
+
+                # Safety ceiling to protect user budget
+                if max_runtime_seconds and elapsed >= max_runtime_seconds:
+                    print(
+                        f"\n[AUTO-STOP SAFETY CEILING] Reached max runtime limit ({elapsed/3600:.1f}h). Stopping to protect balance...",
+                        flush=True,
+                    )
+                    proc.send_signal(signal.SIGINT)
+                    try:
+                        proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        proc.terminate()
+                        proc.wait(timeout=15)
+                    break
+
+            proc.stdout.close()
+            proc.wait()
+        except Exception as e:
+            proc.kill()
+            raise e
     return cmd
 
 

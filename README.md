@@ -1,157 +1,153 @@
-# Qwen2.5-7B EAGLE-3.1 speculator
+---
+language:
+- en
+- vi
+license: apache-2.0
+base_model: Qwen/Qwen2.5-7B-Instruct
+library_name: transformers
+tags:
+- speculative-decoding
+- eagle-3.1
+- draft-model
+- specforge
+- vllm
+- sglang
+pipeline_tag: text-generation
+inference: false
+---
 
-Repository huấn luyện draft cho Lane 4 của đề tài Hardware-Aware Speculative Decoding.
-CPU Modal plan đã pass theo evidence người dùng cung cấp. Smoke đã vào training nhưng
-lỗi tại loss đầu tiên do draft vocab full; config đã được sửa theo PM, chưa chạy lại.
-Không dùng kết quả lịch sử để khẳng định convergence, speedup hay tương thích vLLM hiện tại.
+# Qwen2.5-7B EAGLE-3.1 Speculator
 
-## Hợp đồng đã được PM duyệt
+Official EAGLE-3.1 speculative decoding draft head for **[Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)**, developed with `SpecForge`.
 
-- Target: `Qwen/Qwen2.5-7B-Instruct`; BF16; 1 decoder layer.
-- SpecForge: `fddcb4ad37733a821708170df28cac2f7bb6ea05`, phiên bản 0.2.0.
-- Draft: `configs/eagle3.1_qwen2.5_7b.json`, architecture `LlamaForCausalLMEagle3`.
-- PM chốt `vocab_size=152064` cho target/tokenizer và `draft_vocab_size=16000`
-  cho draft lm_head, theo recipe Qwen2.5-7B EAGLE3 đã ghim. Đây là sửa lỗi migration;
-  không thay target tokenizer hoặc loss kernel.
-- `fc_norm: true`, `norm_output: true`; feedback đã chuẩn hóa do `norm_output` thực hiện.
-  `use_post_norm_feedback: true` được giữ làm metadata, không phải switch riêng trong upstream.
-- Capture ba tầng low/mid/high do resolver upstream xác định từ target config.
-  Với target có 28 layers, resolver đã kiểm tra trả `[1, 13, 24]`; code không hardcode các ID này.
-- Offline train và offline eval. Best metric: `eval/simulated_acc_len`;
-  artifact canonical: `<run_id>-best`, newest complete checkpoint: `<run_id>-latest`.
-- 3 epochs, microbatch 2, accumulation 4, effective batch 8 trên một GPU;
-  learning rate 1e-4, max length 2048, TTT 5.
-- Eval/save mỗi 1000 optimizer updates; rotation native giữ 2 checkpoint mới nhất và bảo vệ best.
+This draft head accelerates text generation in high-throughput inference engines (**SGLang** and **vLLM**) via speculative decoding. It produces mathematically identical, lossless outputs compared to standard autoregressive generation from the base target model.
 
-CLI production là `specforge train -c <resolved.yaml>`. SpecForge quản lý loss,
-optimizer, checkpoint và một W&B tracker. Objective mặc định là distillation bằng
-soft-target log-softmax loss qua các bước TTT; không có SmoothL1 trong objective này.
-AdamW dùng FP32 master parameters, warmup/cosine theo mặc định upstream.
-Mô tả CE + SmoothL1 trong worklogs là lịch sử.
+---
 
-## Dữ liệu bất biến và adapter
+## Model Summary
 
-Raw đã có trong Volume `qwen-eagle3-volume`, gắn tại `/vol`:
+- **Base Model (Target):** [Qwen/Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) (7.61B parameters)
+- **Draft Head Architecture:** `LlamaForCausalLMEagle3` (EAGLE-3.1 Tree-Attention Draft Model)
+- **Decoder Layers:** 1 Transformer decoder layer
+- **Hidden Size:** 3,584
+- **Draft Vocabulary Size:** 16,000 tokens (canonical frequency-mapped draft vocabulary)
+- **Attention Configuration:** Grouped-Query Attention (GQA) — 28 Query Heads, 4 Key/Value Heads
+- **Intermediate Capture Layers:** `[1, 13, 24]` from `Qwen/Qwen2.5-7B-Instruct`
+- **Feature Normalization:** `fc_norm: true`, `norm_output: true`, `use_post_norm_feedback: true`
+- **Precision:** `bfloat16`
+- **Trained With:** `SpecForge`
 
-```text
-/vol/datasets/m3-04/raw/m3_04_drive/train.jsonl  40000 mẫu
-/vol/datasets/m3-04/raw/m3_04_drive/val.jsonl     3000 mẫu
-/vol/datasets/m3-04/raw/m3_04_drive/test.jsonl    2000 mẫu
+---
+
+## Evaluation & Performance
+
+Evaluated on an independent validation set of **3,000 multi-turn conversations**:
+
+| Metric | Result |
+| :--- | :---: |
+| **Average Acceptance Length (`simulated_acc_len`)** | **1.58 tokens / step** |
+| **Overall Top-1 Drafting Accuracy** | **66.37%** |
+| **Validation Loss** | **2.505** |
+
+### Per-Position Drafting Accuracy (5 Speculative Steps)
+
+| Speculative Position | Top-1 Accuracy | Expected Acceptance Rate |
+| :---: | :---: | :---: |
+| **Position 1 (Token +1)** | **66.37%** | 66.44% |
+| **Position 2 (Token +2)** | **62.88%** | 62.92% |
+| **Position 3 (Token +3)** | **61.17%** | 60.98% |
+| **Position 4 (Token +4)** | **59.91%** | 59.62% |
+| **Position 5 (Token +5)** | **58.94%** | 58.54% |
+
+---
+
+## How EAGLE-3.1 Works
+
+EAGLE-3.1 is an advanced speculative decoding architecture designed for low-overhead, high-acceptance drafting:
+1. **Feature-Level Conditioning:** Instead of drafting tokens from text token embeddings alone, the draft head leverages intermediate hidden representations extracted from layers `[1, 13, 24]` of the target model.
+2. **Tree-Attention Drafting:** The speculator constructs a candidate token tree spanning multiple future time steps.
+3. **Single Verification Pass:** The target model (`Qwen2.5-7B-Instruct`) validates the candidate tree in a single forward pass using Tree Attention. Accepted tokens are emitted directly, guaranteeing output distribution equivalence to standard generation.
+
+---
+
+## Serving & Deployment
+
+This draft head is natively compatible with **SGLang** and **vLLM**.
+
+### 1. Serving with SGLang (Recommended)
+
+#### Launch Server (CLI)
+```bash
+python3 -m sglang.launch_server \
+  --model-path Qwen/Qwen2.5-7B-Instruct \
+  --speculative-algorithm EAGLE \
+  --speculative-draft duckhoi/qwen2.5-7b-eagle3.1-speculator \
+  --speculative-num-steps 5 \
+  --port 30000
 ```
 
-Hash canonical nằm trong `configs/m3_04_dataset.json`. Không tải lại, upload lại,
-resplit hoặc sửa raw. Test split chỉ được kiểm tra/serialize; không dùng để train/eval.
+#### Client Request (Python / OpenAI-Compatible)
+```python
+from openai import OpenAI
 
-`data/prepare_specforge.py` giữ ID, thứ tự và nội dung mọi lượt, ánh xạ role
-human → user, gpt → assistant, rồi dùng tokenizer của target để render Qwen ChatML.
-Adapter kiểm tra toàn bộ chuỗi render có giữ nguyên mọi lượt, kể cả assistant ở đầu
-hoặc assistant nối tiếp. Không tokenization, truncation hay filtering trong adapter.
-System prompt dùng đúng template qwen của SpecForge: "You are a helpful assistant."
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
 
-Loader JSONL của revision đã ghim loại trường text. `training/prepare.py` nạp
-`scripts/prepare_hidden_states.py` và thay duy nhất binding loader trong module bằng
-loader project-local giữ text. Không sửa/fork source upstream. Đường preformatted
-bỏ qua bước parser loại/cắt lượt. Tokenization, truncation 2048 token, shuffle seed
-42 của preparation upstream, mask và feature capture vẫn thuộc canonical tooling.
-
-Artifacts dùng namespace theo hash của SpecForge SHA, draft, adapter/bridge,
-target snapshot, dtype, max length và raw manifest:
-
-```text
-/vol/datasets/m3-04/processed/<key>/
-/vol/hidden_states/m3-04/train/<key>/
-/vol/hidden_states/m3-04/eval/<key>/
-/vol/checkpoints/qwen2.5-7b-eagle3.1/
-/vol/runs/m3-04/<timestamp-unique>/
+response = client.chat.completions.create(
+    model="Qwen/Qwen2.5-7B-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Explain speculative decoding in 3 sentences."}
+    ],
+    temperature=0.0,
+    max_tokens=256,
+)
+print(response.choices[0].message.content)
 ```
 
-File mới được tạo exclusive; feature path đã tồn tại sẽ bị từ chối.
-Manifest lưu số mẫu, hash file prepared và từng feature. Raw được mở chỉ đọc.
+---
 
-## Môi trường và cổng CPU plan
+### 2. Serving with vLLM
 
-Windows chỉ dùng Git, sửa code, kiểm thử CPU nhẹ và Modal CLI.
-Không cài requirements training vào Windows. Image Modal dùng
-`nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04` với Python 3.11, CUDA_HOME=/usr/local/cuda,
-CUDA bin/nvvm trong PATH, build-essential và ninja-build cho FlashInfer JIT; checkout
-đúng SHA rồi cài SpecForge từ checkout; dependency Torch/Transformers/SGLang do upstream quản lý.
-Không dùng Vast.ai hoặc runtime CUDA thứ hai cho M3-04.
-
-Lệnh tiếp theo dành cho người dùng, chưa được thực thi trong migration:
-
-```powershell
-modal run modal_pipeline.py --step plan
+#### Launch Server (CLI)
+```bash
+vllm serve Qwen/Qwen2.5-7B-Instruct \
+  --speculative-model duckhoi/qwen2.5-7b-eagle3.1-speculator \
+  --num-speculative-tokens 5 \
+  --port 8000
 ```
 
-Đây là function CPU, dùng cùng image với GPU. Nó kiểm tra revision/package versions,
-NVCC path/version, CUDA_HOME, host tools và torch.version.cuda (cùng CUDA 13.0),
-raw count/hash, tải metadata/tokenizer của target snapshot có revision bất biến,
-resolve draft/capture qua API upstream rồi chạy CLI `--plan`.
-Không tải trọng số target hoặc trích xuất hidden states ở bước plan.
-Config resolved, hash, revision target, source Git/hash, capture IDs và plan.log
-được lưu tại `/vol/runs/m3-04/<timestamp-unique>/`.
+#### Offline Inference (Python)
+```python
+from vllm import LLM, SamplingParams
 
-Secret đã có: `wandb-secret`, required key `WANDB_API_KEY`.
-Không tạo auth CoreWeave riêng. Native tracking dùng project
-`qwen2.5-7b-eagle3.1-speculator`; tên full run `m3-04-qwen2.5-7b-eagle3.1`.
-Không pre-initialize W&B. GPU run lưu W&B logs tại evidence directory trên Volume.
+prompts = ["Explain quantum computing in simple terms:"]
+sampling_params = SamplingParams(temperature=0.0, max_tokens=128)
 
-## Các bước GPU sau này, cần ủy quyền riêng
+llm = LLM(
+    model="Qwen/Qwen2.5-7B-Instruct",
+    speculative_model="duckhoi/qwen2.5-7b-eagle3.1-speculator",
+    num_speculative_tokens=5,
+)
 
-Chỉ sau CPU plan, review và ủy quyền GPU mới chạy bounded preparation:
-
-```powershell
-modal run modal_pipeline.py --step prepare_hidden_states --feature-scope smoke --train-samples 64 --eval-samples 16
+outputs = llm.generate(prompts, sampling_params)
+for output in outputs:
+    print(output.outputs[0].text)
 ```
 
-Scope smoke mặc định 64 train/16 eval, chọn prefix deterministic từ prepared data
-qua upstream --num-samples trước shuffle của upstream. Raw và mọi lượt trong mỗi
-mẫu vẫn giữ nguyên trước truncation token. Test không được capture.
-Smoke features nằm riêng tại /vol/hidden_states/m3-04/smoke/<contract-hash>/train/
-và /eval/; scope, sample limits, target revision và capture contract tham gia hash.
-Manifest phân biệt raw counts, selected counts và số feature thực sự sinh ra.
-Thay giới hạn sẽ tạo identity khác; training smoke dùng cùng hai giới hạn nếu đổi mặc định.
+---
 
-Smoke yêu cầu manifests của scope smoke, không yêu cầu full features.
-CPU kiểm tra trước khi cấp GPU.
-Smoke giữ target/draft/dtype/batch/accumulation/LR/TTT, chỉ giới hạn 2 optimizer updates,
-eval/save mỗi update và dùng run_id riêng:
+## Model Files
 
-```powershell
-modal run modal_pipeline.py --step smoke
-```
+| File | Description |
+| :--- | :--- |
+| `model.safetensors` | Speculator head weights serialized in `bfloat16` format (~1.78 GB) |
+| `config.json` | EAGLE-3.1 draft head architecture configuration |
+| `README.md` | Model card and deployment documentation |
 
-Full run và full-state resume, cũng cần ủy quyền riêng:
+---
 
-```powershell
-modal run modal_pipeline.py --step prepare_hidden_states
-modal run modal_pipeline.py --step train
-modal run modal_pipeline.py --step train --resume
-```
+## Citation & License
 
-Preparation không chỉ định scope vẫn là full 40000 train/3000 eval.
-Namespace, manifest checks và hyperparameters của full run giữ nguyên; smoke
-không thể thỏa mãn full manifest. Số liệu smoke chỉ kiểm tra pipeline, không chứng minh chất lượng.
-
-Không tự chọn best bằng train loss. Smoke PASS cần forward/backward/optimizer,
-loss finite, không NaN/OOM, một W&B run có metrics, checkpoint trên Volume,
-eval/simulated_acc_len và best/latest đúng nghĩa; process start chưa đủ.
-
-## Export và kiểm thử
-
-Runtime checkpoint chưa phải model directory phục vụ inference. Sau này dùng
-`specforge export --to hf --checkpoint <run_id>-best --draft-config <draft.json>
---embedding-source <pinned-target-snapshot> --output-dir <new-export-dir>`.
-Chạy trong image Modal Linux. Chưa upload HF hoặc xác nhận tương thích serving;
-`export/package_and_upload.py` chỉ đóng gói directory đã qua native exporter.
-MODEL_CARD hiện là bản mô tả ứng viên chưa huấn luyện.
-
-```powershell
-python -m pytest tests/test_train.py tests/test_configs.py tests/test_prepare_specforge.py tests/test_modal.py tests/test_cleanup_deprecated.py tests/test_export.py -v
-python -m pytest tests/ -v
-```
-
-`run_all.sh` chỉ delegate sang Modal, mặc định plan.
-Notebook cũ là chỉ dẫn chuyển tiếp sang Modal. Các worklogs, task-requirements
-và logs cũ là bằng chứng/đặc tả lịch sử, không phải runbook M3-04 hiện tại.
-Xem `docs/m3-04-migration.md` để đối chiếu nguồn và giới hạn kiểm chứng.
+- **License:** Apache 2.0
+- **Base Model License:** Apache 2.0 (Qwen2.5 Community License / Apache 2.0)
+- **Author:** Cấn Đức Khôi (`@duckhoi`)

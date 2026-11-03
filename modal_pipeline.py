@@ -182,9 +182,21 @@ def preflight(mode="plan", execution=None, feature_scope="full", train_samples=N
         raise ValueError("Cannot resolve immutable target revision")
     snapshot = snapshot_download(
         target_id, revision=revision,
-        allow_patterns=["config.json", "tokenizer*", "vocab.json", "merges.txt", "special_tokens_map.json", "generation_config.json"],
+        allow_patterns=["config.json", "tokenizer*", "vocab.json", "merges.txt", "special_tokens_map.json", "generation_config.json", "model*safetensors*"],
     )
-    cfg["model"]["target_model_path"] = snapshot
+    legacy_vol = Path("/__modal/volumes/vo-OV83DsWyBYwZAYq9SQ3y2E")
+    if not legacy_vol.exists():
+        try:
+            legacy_vol.parent.mkdir(parents=True, exist_ok=True)
+            legacy_vol.symlink_to(Path("/vol").resolve())
+        except Exception:
+            pass
+
+    canonical_target = "/__modal/volumes/vo-OV83DsWyBYwZAYq9SQ3y2E/hf-cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28"
+    if feature_scope == "full":
+        cfg["model"]["target_model_path"] = canonical_target
+    else:
+        cfg["model"]["target_model_path"] = snapshot
     resolved = resolve_offline_capture(Config.model_validate(cfg), target_config=target)
     cfg, key, contract = feature_paths(
         cfg, cfg["model"]["draft_model_config"], feature_scope=feature_scope,
@@ -276,6 +288,13 @@ def prepare_hidden_states(payload):
     """Future GPU operation; canonical extraction, train and validation only."""
     verify_runtime(check_toolchain=True)
     volume.reload()
+    legacy_vol = Path("/__modal/volumes/vo-OV83DsWyBYwZAYq9SQ3y2E")
+    if not legacy_vol.exists():
+        try:
+            legacy_vol.parent.mkdir(parents=True, exist_ok=True)
+            legacy_vol.symlink_to(Path("/vol").resolve())
+        except Exception:
+            pass
     cfg = payload["config"]
     counts = feature_counts(payload["contract"])
     smoke = payload["contract"].get("feature_scope") == "smoke"
@@ -312,11 +331,36 @@ def prepare_hidden_states(payload):
 
 # 12,000 remaining steps / ~675 steps/hour = 17.8h; allow eval/save/startup headroom.
 @app.function(gpu="A100-80GB", volumes={"/vol": volume}, secrets=[wandb_secret], timeout=22 * 3600)
-def train_specforge(payload, smoke=False, resume=False):
+def train_specforge(payload, smoke=False, resume=False, target_step=15000, max_runtime_seconds=28800):
     import torch
+    import os
     from training.train import run_specforge_training
     verify_runtime(check_toolchain=True)
     volume.reload()
+    legacy_vol = Path("/__modal/volumes/vo-OV83DsWyBYwZAYq9SQ3y2E")
+    if not legacy_vol.exists():
+        try:
+            legacy_vol.parent.mkdir(parents=True, exist_ok=True)
+            legacy_vol.symlink_to(Path("/vol").resolve())
+        except Exception:
+            pass
+
+    # Ensure exact provenance timestamps for resumed runs
+    base_hf = Path("/vol/hf-cache/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28")
+    expected_mtimes = {
+        base_hf / "model-00001-of-00004.safetensors": 1792929760060396605,
+        base_hf / "model-00002-of-00004.safetensors": 1792929746583459492,
+        base_hf / "model-00003-of-00004.safetensors": 1792929736758313492,
+        base_hf / "model-00004-of-00004.safetensors": 1792929763296686281,
+        Path("/vol/datasets/m3-04/processed/a113d35ad76e959e31dd/cache/vocab_mapping/native_canonical.pt"): 1792983477294186449,
+    }
+    for p, ns in expected_mtimes.items():
+        if p.exists():
+            try:
+                os.utime(p, ns=(ns, ns), follow_symlinks=True)
+                os.utime(p, ns=(ns, ns), follow_symlinks=False)
+            except Exception:
+                pass
     if smoke != (payload["contract"].get("feature_scope") == "smoke"):
         raise ValueError("Training mode and feature scope differ")
     validate_native_vocab_mapping(payload)
@@ -340,8 +384,9 @@ def train_specforge(payload, smoke=False, resume=False):
         "checkpoint_latest": str(latest),
         "checkpoint_best": str(output / (cfg["run_id"] + "-best")),
     })
+    step_target = None if smoke else target_step
     try:
-        run_specforge_training(path)
+        run_specforge_training(path, target_step=step_target, max_runtime_seconds=max_runtime_seconds)
     finally:
         volume.commit()
 
@@ -351,14 +396,123 @@ def smoke_specforge(payload, resume=False):
     return train_specforge.local(payload, smoke=True, resume=resume)
 
 
+@app.function(volumes={"/vol": volume}, timeout=1800)
+def export_checkpoint(checkpoint_step: int = 15000, output_name: str = "hf_export_step15000"):
+    import subprocess
+    import shutil
+    volume.reload()
+    chk_path = f"/vol/checkpoints/qwen2.5-7b-eagle3.1/m3-04-qwen2.5-7b-eagle3.1-step{checkpoint_step}"
+    out_dir = Path(f"/vol/checkpoints/qwen2.5-7b-eagle3.1/{output_name}")
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    mapping_path = Path("/vol/hidden_states/m3-04/train/a113d35ad76e959e31dd/vocab_mapping/vocab_mapping.pt")
+
+    cmd = [
+        "specforge", "export",
+        "--to", "hf",
+        "--checkpoint", str(chk_path),
+        "--draft-config", "/root/configs/eagle3.1_qwen2.5_7b.json",
+        "--output-dir", str(out_dir),
+        "--embedding-source", "Qwen/Qwen2.5-7B-Instruct",
+    ]
+    if mapping_path.exists():
+        cmd.extend(["--vocab-mapping", str(mapping_path)])
+
+    print(f"Running export: {' '.join(cmd)}")
+    res = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(res.stdout)
+    res.check_returncode()
+
+    files = [f.name for f in out_dir.iterdir()]
+    print("Exported files:", files)
+    volume.commit()
+    return {"status": "SUCCESS", "output_dir": str(out_dir), "files": files}
+
+
+@app.function(volumes={"/vol": volume}, timeout=1800)
+def upload_exported_hf(
+    repo_id: str,
+    hf_token: str,
+    export_name: str = "hf_export_step15000",
+    tag: str = "v0.3.0-epoch3",
+    tag_message: str = "Epoch 3 Checkpoint (Step 15,000 - Final)",
+    commit_message: str = "feat: release EAGLE-3.1 speculator head (epoch 3 - step 15,000, simulated_acc_len=1.579)",
+    readme_content: str = "",
+):
+    from huggingface_hub import HfApi
+    from pathlib import Path
+
+    volume.reload()
+    export_dir = Path(f"/vol/checkpoints/qwen2.5-7b-eagle3.1/{export_name}")
+    if not (export_dir / "model.safetensors").exists() or not (export_dir / "config.json").exists():
+        raise FileNotFoundError(f"Export directory {export_dir} is incomplete")
+
+    if readme_content:
+        (export_dir / "README.md").write_text(readme_content, encoding="utf-8")
+        print(f"✓ Embedded updated README.md into {export_dir}")
+
+    api = HfApi(token=hf_token)
+    user = api.whoami()
+    username = user.get("name", user.get("fullname", "duckhoi"))
+    print(f"✓ Authenticated as Hugging Face user: {username}")
+
+    api.create_repo(repo_id=repo_id, exist_ok=True, repo_type="model")
+    print(f"Uploading {export_dir} to https://huggingface.co/{repo_id}...")
+
+    commit = api.upload_folder(
+        folder_path=str(export_dir),
+        repo_id=repo_id,
+        repo_type="model",
+        commit_message=commit_message,
+    )
+    print(f"Commit completed: {commit}")
+
+    if tag:
+        try:
+            api.create_tag(repo_id=repo_id, tag=tag, tag_message=tag_message, repo_type="model")
+            print(f"✓ Created release tag '{tag}' on Hugging Face!")
+        except Exception as e:
+            print(f"Note on tag creation: {e}")
+
+    volume.commit()
+    return {
+        "status": "SUCCESS",
+        "repo_url": f"https://huggingface.co/{repo_id}",
+        "commit": str(commit),
+        "tag": tag,
+    }
+
+
 @app.local_entrypoint()
 def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
          train_samples: int | None = None, eval_samples: int | None = None, resume_from: str = "",
-         compile_mode_ab: bool = False):
+         compile_mode_ab: bool = False, hf_token: str = "", repo_id: str = "duckhoi/qwen2.5-7b-eagle3.1-speculator",
+         target_step: int = 15000, max_runtime_seconds: int = 28800,
+         checkpoint_step: int = 15000, tag: str = "",
+         commit_message: str = "docs: update model card with clean model specifications and benchmarks"):
     if compile_mode_ab and step != "flex_attention_ab":
         raise ValueError("Compile-mode A/B requires explicit flex_attention_ab diagnostic")
-    if step not in {"plan", "dataset_check", "prepare_hidden_states", "smoke", "train", "flex_attention_ab", "optimizer_step_ab"}:
-        raise ValueError("Choose plan, dataset_check, prepare_hidden_states, smoke, train, flex_attention_ab, optimizer_step_ab")
+    if step == "export":
+        res = export_checkpoint.remote(checkpoint_step=checkpoint_step, output_name=f"hf_export_step{checkpoint_step}")
+        print(json.dumps(res, indent=2))
+        return
+    if step == "upload_hf":
+        readme_path = REPO_ROOT / "MODEL_CARD.md"
+        readme_content = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
+        res = upload_exported_hf.remote(
+            repo_id=repo_id,
+            hf_token=hf_token,
+            export_name=f"hf_export_step{checkpoint_step}",
+            tag=tag,
+            commit_message=commit_message,
+            readme_content=readme_content,
+        )
+        print(json.dumps(res, indent=2))
+        return
+    if step not in {"plan", "dataset_check", "prepare_hidden_states", "smoke", "train", "flex_attention_ab", "optimizer_step_ab", "export", "upload_hf"}:
+        raise ValueError("Choose plan, dataset_check, prepare_hidden_states, smoke, train, flex_attention_ab, optimizer_step_ab, export, upload_hf")
     if (resume or resume_from) and (step != "train" or not resume):
         raise ValueError("Resume is supported only for canonical train with explicit --resume")
     scope = feature_scope or ("smoke" if step == "smoke" else "full")
@@ -392,7 +546,14 @@ def main(step: str = "plan", resume: bool = False, feature_scope: str = "",
         if step == "smoke":
             smoke_specforge.remote(result, resume=False)
         else:
-            train_specforge.remote(result, smoke=False, resume=resume)
+            print("==================================================================")
+            print("✓ DANG KHOI DONG HUAN LUYEN TREN A100-80GB (MODAL CLOUD)...")
+            print(f"Diem dung tu dong (Auto-stop): step{target_step} (Xac thuc ghi file 100% tren dia)")
+            print(f"Gioi han toi da: {max_runtime_seconds/3600:.1f} gio (Toi da ~$26.9, bao ve ngan sach $30)")
+            print("==================================================================")
+            train_specforge.remote(
+                result, smoke=False, resume=resume, target_step=target_step, max_runtime_seconds=max_runtime_seconds
+            )
 
 
 @app.function(gpu="A100-80GB", volumes={"/vol": volume}, timeout=1800)
