@@ -27,8 +27,8 @@ def test_eagle3_1_config_pinned():
         cfg = json.load(f)
 
     assert cfg.get("num_hidden_layers") == 1, "EAGLE-3.1 phải có đúng 1 decoder layer"
-    assert cfg.get("use_fc_norm") is True, "EAGLE-3.1 bắt buộc use_fc_norm: true"
+    assert cfg.get("fc_norm") is True
     assert cfg.get("norm_output") is True, "EAGLE-3.1 bắt buộc norm_output: true"
     assert cfg.get("use_post_norm_feedback") is True, "EAGLE-3.1 bắt buộc use_post_norm_feedback: true"
-    assert cfg.get("target_layer") == 28, "EAGLE-3.1 bắt buộc target_layer: 28"
+    assert "target_layer" not in cfg  # PM-approved canonical three-layer capture
     assert cfg.get("hidden_size") == 3584, "hidden_size phải là 3584 cho Qwen2.5-7B"

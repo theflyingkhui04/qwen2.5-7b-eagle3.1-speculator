@@ -1,19 +1,34 @@
-target_model_path: "Qwen/Qwen2.5-7B-Instruct"
-draft_model_config: "configs/eagle3.1_qwen2.5_7b.json"
-train_data_path: "data/processed/train.jsonl"
-val_data_path: "data/processed/val.jsonl"
-output_dir: "checkpoints/qwen2.5-7b-eagle3.1"
-num_epochs: 3
-batch_size: 2
-gradient_accumulation_steps: 4
-learning_rate: 1.0e-4
-max_seq_len: 2048
-ttt_length: 5
-tp_size: 1
-save_interval: 1
-save_total_limit: 2
-
-wandb:
-  enabled: true
-  project: "qwen2.5-7b-eagle3.1-speculator"
-  run_name: "eagle3.1-qwen2.5-7b-train"
+model:
+  target_model_path: Qwen/Qwen2.5-7B-Instruct
+  draft_model_config: /root/configs/eagle3.1_qwen2.5_7b.json
+  torch_dtype: bfloat16
+  # Capture layers come from the pinned resolver; no manual override.
+data:
+  hidden_states_path: /vol/hidden_states/m3-04/train/current
+  eval_hidden_states_path: /vol/hidden_states/m3-04/eval/current
+  max_length: 2048
+  chat_template: qwen
+  is_preformatted: true
+  cache_dir: /vol/datasets/m3-04/processed/cache
+training:
+  strategy: eagle3
+  num_epochs: 3
+  batch_size: 2
+  accumulation_steps: 4
+  learning_rate: 1.0e-4
+  ttt_length: 5
+  attention_backend: flex_attention
+  eval_interval: 1000
+  save_interval: 1000
+  max_checkpoints: 2
+tracking:
+  report_to: wandb
+  wandb_project: qwen2.5-7b-eagle3.1-speculator
+  wandb_name: m3-04-qwen2.5-7b-eagle3.1
+deployment:
+  mode: local_colocated
+  trainer:
+    nnodes: 1
+    nproc_per_node: 1
+run_id: m3-04-qwen2.5-7b-eagle3.1
+output_dir: /vol/checkpoints/qwen2.5-7b-eagle3.1

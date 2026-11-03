@@ -1,5 +1,7 @@
 # Workspace Rules
 
+- **Từ vựng đã được PM chốt:** `vocab_size=152064` là không gian token của target; `draft_vocab_size=16000` là output head EAGLE3. Không đồng nhất hai kích thước. Mapping được dựng từ TRAIN features; eval dùng chung mapping.
+
 - **Không tự động commit:** Tuyệt đối không tự động chạy lệnh `git commit`. Sau khi hoàn thành code, chỉ cung cấp commit message gợi ý để người dùng tự kiểm tra và commit.
 - **Không dùng LaTeX:** Trình bày công thức bằng chữ thường và Unicode trực quan.
 - **Quy tắc chính tả tiếng Việt (No English Title Case):**
@@ -9,4 +11,4 @@
     - Chỉ viết hoa danh từ riêng (tên người, địa danh, tên riêng của mô hình, công nghệ: Bùi Đức Đại, Cấn Đức Khôi, Tesla T4, PyTorch, CUDA, vLLM, Qwen2.5, NIST).
     - Viết hoa các từ viết tắt chuẩn (PM, DoD, AWQ, VRAM, OOM, JSON, SQL).
   - Khi tạo hoặc chỉnh sửa bất kỳ tài liệu tiếng Việt nào (file Markdown, commit message, báo cáo), luôn áp dụng quy tắc này để câu văn tự nhiên và chuẩn văn phong học thuật tiếng Việt.
-- **Ghim kiến trúc EAGLE-3.1:** Chỉ sử dụng cấu hình `configs/eagle3.1_qwen2.5_7b.json`, duy trì bắt buộc `fc_norm: true`, `norm_output: true`, `use_post_norm_feedback: true`, `target_layer: 28`, 1 decoder layer.
+- **Ghim kiến trúc EAGLE-3.1 (PM duyệt migration ngày 25/10/2026):** Chỉ sử dụng `configs/eagle3.1_qwen2.5_7b.json`, duy trì `fc_norm: true`, `norm_output: true`, `use_post_norm_feedback: true` và 1 decoder layer. Hợp đồng `target_layer: 28` được thay bằng capture ba tầng low/mid/high do resolver của SpecForge tại SHA đã ghim xác định; không hardcode chỉ số tầng. Dùng offline train/offline eval, BF16 và `eval/simulated_acc_len`. Adapter dự án phải giữ mọi lượt hội thoại trước truncation theo độ dài token; raw dataset bất biến.

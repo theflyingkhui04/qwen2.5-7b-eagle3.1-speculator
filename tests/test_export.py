@@ -12,22 +12,20 @@ from export.package_and_upload import (
 )
 
 
-def test_build_hf_config_for_vllm_float16():
+def test_packaging_preserves_native_bfloat16_config():
     raw_cfg = {
         "hidden_size": 3584,
         "num_hidden_layers": 1,
         "num_attention_heads": 28,
         "target_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
-        "target_layer": 28,
+        "architectures": ["LlamaForCausalLMEagle3"],
+        "torch_dtype": "bfloat16",
     }
-    hf_cfg = build_hf_config(raw_cfg, precision="float16")
-    assert "Eagle3_1Qwen2ForCausalLM" in hf_cfg["architectures"]
-    assert "EagleQwen2ForCausalLM" in hf_cfg["architectures"]
-    assert hf_cfg["eagle_version"] == "3.1"
-    assert hf_cfg["use_post_norm_feedback"] is True
-    assert hf_cfg["torch_dtype"] == "float16"
+    hf_cfg = build_hf_config(raw_cfg)
+    assert hf_cfg["architectures"] == ["LlamaForCausalLMEagle3"]
+    assert hf_cfg["torch_dtype"] == "bfloat16"
     assert hf_cfg["hidden_size"] == 3584
-    assert hf_cfg["target_layer"] == 28
+    assert "target_layer" not in hf_cfg
 
 
 def test_verify_package_integrity(tmp_path):
@@ -36,7 +34,7 @@ def test_verify_package_integrity(tmp_path):
 
     # Có đầy đủ config.json và model.safetensors -> True
     (tmp_path / "config.json").write_text(
-        json.dumps({"architectures": ["Eagle3_1Qwen2ForCausalLM", "EagleQwen2ForCausalLM"]}),
+        json.dumps({"architectures": ["LlamaForCausalLMEagle3"], "torch_dtype": "bfloat16"}),
         encoding="utf-8",
     )
     (tmp_path / "model.safetensors").write_bytes(b"dummy_weights")
@@ -97,3 +95,24 @@ def test_upload_to_huggingface_with_mock_api(tmp_path):
             repo_type="model",
         )
         mock_api_instance.upload_folder.assert_called_once()
+
+
+@pytest.mark.parametrize("dtype", ["bfloat16", "float16", "float32"])
+def test_packaging_native_serialized_dtype(tmp_path, dtype):
+    import torch
+    from safetensors.torch import save_file
+    from transformers import LlamaConfig
+
+    # Native save_pretrained writes dtype, not the legacy torch_dtype key.
+    LlamaConfig(architectures=["LlamaForCausalLMEagle3"], dtype=dtype).save_pretrained(tmp_path)
+    save_file({"lm_head.weight": torch.zeros(1, dtype=getattr(torch, dtype))},
+              str(tmp_path / "model.safetensors"))
+    config = json.loads((tmp_path / "config.json").read_text())
+    assert config["dtype"] == dtype and "torch_dtype" not in config
+    if dtype == "bfloat16":
+        assert build_hf_config(config) == config
+        assert verify_package_integrity(tmp_path)
+    else:
+        with pytest.raises(ValueError, match="BF16"):
+            build_hf_config(config)
+        assert not verify_package_integrity(tmp_path)

@@ -10,9 +10,6 @@ def test_essential_files_exist():
 def test_requirements_contains_pinned_packages():
     root = Path(__file__).parent.parent
     req_content = (root / "requirements.txt").read_text(encoding="utf-8")
-    assert "torch" in req_content
-    assert "transformers" in req_content
-    assert "safetensors" in req_content
-    assert "accelerate" in req_content
-    assert "SpecForge" in req_content
-    assert "sglang" in req_content
+    assert "SpecForge.git@fddcb4ad37733a821708170df28cac2f7bb6ea05" in req_content
+    assert "modal==1.6.2" in req_content
+    assert "pytest" in req_content
